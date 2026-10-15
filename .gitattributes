@@ -1,0 +1,4 @@
+# Garante quebras de linha corretas em qualquer maquina
+* text=auto
+*.bat text eol=crlf
+*.ps1 text eol=crlf
