@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Hub</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23d97757'/><path d='M9 22l7-12 7 12' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/vendor/marked.min.js"></script>
+  <script src="/static/vendor/purify.min.js"></script>
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <div class="side-head">
+      <a class="brand" href="#/" title="Voltar à tela inicial"><span class="logo">A</span> Agent Hub</a>
+      <button id="btn-new-chat" class="btn primary block">+ Novo chat</button>
+      <input id="chat-search" class="input" placeholder="Buscar chats…">
+    </div>
+    <div class="side-agents">
+      <div id="agents-toggle" class="section-toggle" role="button" tabindex="0" title="Mostrar/ocultar agentes">
+        <span class="chev">▾</span> Agentes <span id="agents-count"></span>
+        <span class="grow"></span>
+        <button id="agents-add" class="btn ghost icon" title="Criar agente">+</button>
+      </div>
+      <div id="side-agent-list"></div>
+    </div>
+    <div class="group-label chats-label">Chats</div>
+    <nav id="chat-list"></nav>
+    <div class="side-foot">
+      <button id="btn-import" class="btn ghost block">⤓ Importar conversas</button>
+      <button id="btn-agents" class="btn ghost block">🤖 Agentes</button>
+      <button id="btn-settings" class="btn ghost block">⚙️ Ambiente <span id="mcp-alert" class="alert-badge hidden"></span></button>
+    </div>
+  </aside>
+
+  <main id="main">
+    <!-- tela vazia -->
+    <section id="view-empty" class="view">
+      <header class="chat-head only-mobile-flex">
+        <button class="btn ghost icon" data-action="menu">☰</button>
+        <h2>Agent Hub</h2>
+      </header>
+      <div class="empty">
+        <h1>Agent Hub</h1>
+        <p>Converse com o <b>Claude</b> ou o <b>Codex</b> na sua máquina, com várias conversas em paralelo e agentes personalizados.</p>
+        <div class="row center gap">
+          <button class="btn primary" data-new="claude">Novo chat com Claude</button>
+          <button class="btn" data-new="codex">Novo chat com Codex</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- conversa -->
+    <section id="view-chat" class="view hidden">
+      <header class="chat-head">
+        <button id="btn-menu" class="btn ghost icon only-mobile" title="Chats">☰</button>
+        <span id="chat-provider" class="badge"></span>
+        <input id="chat-title" class="title-input" spellcheck="false">
+        <span id="chat-status" class="status-pill"></span>
+        <div class="grow"></div>
+        <button id="btn-chat-settings" class="btn ghost" title="Configurações deste chat">⚙️ Config.</button>
+      </header>
+      <div id="chat-settings" class="settings-bar hidden"></div>
+      <div id="messages"></div>
+      <div id="approvals"></div>
+      <footer class="composer">
+        <div id="slash-menu" class="slash-menu hidden"></div>
+        <textarea id="input" rows="1" placeholder="Mensagem…  (Enter envia · Shift+Enter quebra linha · / para comandos)"></textarea>
+        <div class="composer-actions">
+          <span id="composer-info" class="muted small"></span>
+          <div class="grow"></div>
+          <button id="btn-stop" class="btn danger hidden">■ Parar</button>
+          <button id="btn-send" class="btn primary">Enviar</button>
+        </div>
+      </footer>
+    </section>
+
+    <!-- início de conversa (agente ou chat livre) -->
+    <section id="view-start" class="view hidden">
+      <header class="chat-head">
+        <button class="btn ghost icon only-mobile" data-action="menu">☰</button>
+        <span id="start-badge" class="badge"></span>
+        <h2 id="start-title"></h2>
+        <div class="grow"></div>
+        <button id="start-edit-agent" class="btn ghost">✏️ Editar agente</button>
+      </header>
+      <div id="start-body" class="start-body"></div>
+      <footer class="composer">
+        <textarea id="start-input" rows="1" placeholder="Primeira mensagem…  (Enter envia e cria o chat · Shift+Enter quebra linha)"></textarea>
+        <div class="composer-actions">
+          <span class="muted small">O chat é criado ao enviar.</span>
+          <div class="grow"></div>
+          <button id="start-send" class="btn primary">Enviar</button>
+        </div>
+      </footer>
+    </section>
+
+    <!-- agentes -->
+    <section id="view-agents" class="view hidden">
+      <header class="chat-head">
+        <button class="btn ghost icon only-mobile" data-action="menu">☰</button>
+        <h2>Agentes</h2>
+        <div class="grow"></div>
+        <button id="btn-new-agent" class="btn primary">+ Novo agente</button>
+      </header>
+      <div class="agents-layout">
+        <div id="agent-list" class="agent-list"></div>
+        <form id="agent-form" class="agent-form hidden" autocomplete="off"></form>
+      </div>
+    </section>
+
+    <!-- importar -->
+    <section id="view-import" class="view hidden">
+      <header class="chat-head">
+        <button class="btn ghost icon only-mobile" data-action="menu">☰</button>
+        <h2>Importar conversas</h2>
+        <div class="grow"></div>
+        <div class="seg" id="import-provider">
+          <button type="button" data-p="claude" class="on">Claude Code</button>
+          <button type="button" data-p="codex">Codex</button>
+        </div>
+      </header>
+      <div class="import-page">
+        <p class="hint">Traga uma conversa do VS Code (ou da linha de comando) para continuar aqui com todo o contexto. Na primeira mensagem enviada daqui, o Agent Hub cria uma <b>cópia</b> da conversa: a original continua intacta no VS Code.</p>
+        <input id="import-search" class="input" placeholder="Buscar por título ou pasta…">
+        <div id="import-list" class="import-list"></div>
+      </div>
+    </section>
+
+    <!-- ambiente -->
+    <section id="view-settings" class="view hidden">
+      <header class="chat-head">
+        <button class="btn ghost icon only-mobile" data-action="menu">☰</button>
+        <h2>Ambiente</h2>
+      </header>
+      <div id="settings-body" class="settings-page"></div>
+    </section>
+  </main>
+</div>
+
+<div id="ctx-menu" class="ctx-menu hidden" role="menu"></div>
+<div id="toast" class="toast hidden"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
