@@ -113,3 +113,16 @@ def read_events(chat_id: str) -> list[dict]:
 def delete_events(chat_id: str) -> None:
     with _lock:
         (CHATS_DIR / f"{chat_id}.jsonl").unlink(missing_ok=True)
+
+
+ANEXOS_DIR = DATA_DIR / "anexos"
+
+
+def anexos_dir(chat_id: str) -> Path:
+    """Pasta das imagens anexadas a um chat (apagada junto com o chat)."""
+    return ANEXOS_DIR / chat_id
+
+
+def delete_anexos(chat_id: str) -> None:
+    import shutil
+    shutil.rmtree(anexos_dir(chat_id), ignore_errors=True)

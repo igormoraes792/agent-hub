@@ -66,8 +66,11 @@
       <div id="approvals"></div>
       <footer class="composer">
         <div id="slash-menu" class="slash-menu hidden"></div>
-        <textarea id="input" rows="1" placeholder="Mensagem…  (Enter envia · Shift+Enter quebra linha · / para comandos)"></textarea>
+        <div id="tray" class="attach-tray hidden"></div>
+        <textarea id="input" rows="1" placeholder="Mensagem…  (Enter envia · Shift+Enter quebra linha · / para comandos · Ctrl+V cola imagem)"></textarea>
+        <input type="file" id="file-input" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
         <div class="composer-actions">
+          <button id="btn-attach" class="btn ghost icon" type="button" title="Anexar imagem (ou cole com Ctrl+V, ou arraste para a conversa)">📎</button>
           <span id="composer-info" class="muted small"></span>
           <div class="grow"></div>
           <button id="btn-stop" class="btn danger hidden">■ Parar</button>
@@ -87,8 +90,11 @@
       </header>
       <div id="start-body" class="start-body"></div>
       <footer class="composer">
-        <textarea id="start-input" rows="1" placeholder="Primeira mensagem…  (Enter envia e cria o chat · Shift+Enter quebra linha)"></textarea>
+        <div id="start-tray" class="attach-tray hidden"></div>
+        <textarea id="start-input" rows="1" placeholder="Primeira mensagem…  (Enter envia e cria o chat · Shift+Enter quebra linha · Ctrl+V cola imagem)"></textarea>
+        <input type="file" id="start-file-input" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
         <div class="composer-actions">
+          <button id="btn-start-attach" class="btn ghost icon" type="button" title="Anexar imagem (ou cole com Ctrl+V, ou arraste para a tela)">📎</button>
           <span class="muted small">O chat é criado ao enviar.</span>
           <div class="grow"></div>
           <button id="start-send" class="btn primary">Enviar</button>

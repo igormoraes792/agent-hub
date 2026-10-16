@@ -180,6 +180,7 @@ function upsertChat(chat) {
 const currentChat = () => S.chats.find((c) => c.id === S.chatId);
 
 async function openChat(id) {
+  if (S.chatId !== id) { S.anexos.chat = []; renderTray("chat"); }  // anexos não "vazam" para outro chat
   S.chatId = id;
   show("chat");
   const msgs = $("#messages");
@@ -368,6 +369,7 @@ function finishActivity() {
   const cats = Object.entries(g.cats).sort((a, b) => b[1] - a[1]).map(([c, n]) => `${c} ×${n}`).join(" · ");
   $(".act-text", g.det).textContent = g.count ? `${g.count} ${g.count === 1 ? "etapa concluída" : "etapas concluídas"}` : "Preparação concluída";
   $(".act-meta", g.det).textContent = cats;
+  if (!g.count) g.box.classList.add("sem-etapas");  // só avisos técnicos (ex.: conexão): não ocupa espaço na conversa
 }
 
 /* Botão "Copiar" em cada bloco de código das respostas. */
@@ -423,10 +425,16 @@ function renderEvent(ev, wrap) {
   if (!wrap) return;
   $("#live-indicator")?.remove();  // sai antes de desenhar (é recolocado no fim por updateLive)
   switch (ev.kind) {
-    case "user":
+    case "user": {
       finishActivity();
-      wrap.append(h("div", { class: "msg user" }, `<div class="bubble">${esc(ev.text)}</div>`));
+      const imgs = (ev.images || []).map((i) => {
+        const url = `/api/chats/${encodeURIComponent(S.chatId)}/anexos/${encodeURIComponent(i.file)}`;
+        return `<a href="${url}" target="_blank" rel="noopener" title="${esc(i.name)}"><img src="${url}" alt="${esc(i.name)}" loading="lazy"></a>`;
+      }).join("");
+      wrap.append(h("div", { class: "msg user" },
+        `<div class="bubble">${imgs ? `<div class="bubble-imgs">${imgs}</div>` : ""}${ev.text ? `<div>${esc(ev.text)}</div>` : ""}</div>`));
       break;
+    }
     case "assistant": {
       if (ev.parent) {  // texto intermediário de subagente: detalhe técnico
         addActivity(wrap, mdNode("act-note", ev.text), null, null);
@@ -631,15 +639,105 @@ function approvalCard(req) {
 }
 
 /* ------------------------------------------------------------------ compositor */
+/* ------------------------------------------------------------------ imagens anexadas */
+S.anexos = { chat: [], start: [] };
+const TIPOS_IMAGEM = /^image\/(png|jpeg|gif|webp)$/;
+
+function lerComoDataURL(file) {
+  return new Promise((ok, erro) => {
+    const r = new FileReader();
+    r.onload = () => ok(r.result);
+    r.onerror = () => erro(new Error(`Não consegui ler "${file.name}".`));
+    r.readAsDataURL(file);
+  });
+}
+function carregarImagem(src) {
+  return new Promise((ok, erro) => {
+    const img = new Image();
+    img.onload = () => ok(img);
+    img.onerror = () => erro(new Error("Imagem inválida."));
+    img.src = src;
+  });
+}
+/* Lê a imagem e, se for muito grande, reduz para no máximo 2000 px (a IA não precisa de mais e o envio fica leve). */
+async function prepararImagem(file) {
+  if (!TIPOS_IMAGEM.test(file.type)) throw new Error(`"${file.name}" não é uma imagem suportada (PNG, JPG, GIF ou WEBP).`);
+  if (file.size > 20 * 1024 * 1024) throw new Error(`"${file.name}" é grande demais (máximo 20 MB).`);
+  let dataUrl = await lerComoDataURL(file);
+  let tipo = file.type;
+  if (tipo !== "image/gif") {
+    const img = await carregarImagem(dataUrl);
+    const escala = Math.min(1, 2000 / Math.max(img.width, img.height));
+    if (escala < 1 || file.size > 3.5 * 1024 * 1024) {
+      const c = document.createElement("canvas");
+      c.width = Math.round(img.width * escala);
+      c.height = Math.round(img.height * escala);
+      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      tipo = "image/jpeg";
+      dataUrl = c.toDataURL(tipo, 0.88);
+    }
+  }
+  return { name: file.name || "imagem colada", media_type: tipo, data: dataUrl.split(",")[1], preview: dataUrl };
+}
+async function adicionarAnexos(onde, arquivos) {
+  const imagens = [...arquivos].filter((f) => f && f.type && f.type.startsWith("image/"));
+  if (!imagens.length) return false;
+  for (const f of imagens) {
+    if (S.anexos[onde].length >= 10) { toast("No máximo 10 imagens por mensagem."); break; }
+    try { S.anexos[onde].push(await prepararImagem(f)); }
+    catch (e) { toast(e.message); }
+  }
+  renderTray(onde);
+  return true;
+}
+function renderTray(onde) {
+  const tray = $(onde === "chat" ? "#tray" : "#start-tray");
+  const lista = S.anexos[onde];
+  tray.classList.toggle("hidden", !lista.length);
+  tray.innerHTML = "";
+  lista.forEach((a, i) => {
+    const item = h("div", { class: "att", title: a.name }, `<img src="${a.preview}" alt="${esc(a.name)}">`);
+    item.append(h("button", { type: "button", class: "att-x", title: "Remover", onclick: () => { lista.splice(i, 1); renderTray(onde); } }, "✕"));
+    tray.append(item);
+  });
+}
+function anexosParaEnvio(onde) {
+  return S.anexos[onde].map(({ name, media_type, data }) => ({ name, media_type, data }));
+}
+/* Liga colar (Ctrl+V), arrastar e o botão 📎 a uma caixa de mensagem. */
+function ligarAnexos(onde, textarea, botao, campoArquivo, areaSoltar) {
+  textarea.addEventListener("paste", async (e) => {
+    const arquivos = [...(e.clipboardData?.items || [])].filter((i) => i.kind === "file").map((i) => i.getAsFile());
+    if (arquivos.some((f) => f && f.type.startsWith("image/"))) {
+      e.preventDefault();
+      await adicionarAnexos(onde, arquivos);
+    }
+  });
+  botao.onclick = () => campoArquivo.click();
+  campoArquivo.onchange = async () => { await adicionarAnexos(onde, campoArquivo.files); campoArquivo.value = ""; };
+  areaSoltar.addEventListener("dragover", (e) => {
+    if ([...(e.dataTransfer?.items || [])].some((i) => i.kind === "file")) { e.preventDefault(); areaSoltar.classList.add("soltar-aqui"); }
+  });
+  areaSoltar.addEventListener("dragleave", (e) => { if (!areaSoltar.contains(e.relatedTarget)) areaSoltar.classList.remove("soltar-aqui"); });
+  areaSoltar.addEventListener("drop", async (e) => {
+    areaSoltar.classList.remove("soltar-aqui");
+    if (e.dataTransfer?.files?.length) { e.preventDefault(); await adicionarAnexos(onde, e.dataTransfer.files); textarea.focus(); }
+  });
+}
+
 async function send() {
   const input = $("#input");
   const text = input.value.trim();
-  if (!text || !S.chatId) return;
+  const attachments = anexosParaEnvio("chat");
+  if ((!text && !attachments.length) || !S.chatId) return;
+  const anexosAntes = S.anexos.chat;
   input.value = "";
+  S.anexos.chat = [];
+  renderTray("chat");
   autosize();
   hideSlash();
-  try { await api("POST", `/api/chats/${S.chatId}/send`, { text }); }
-  catch (e) { toast(e.message); input.value = text; }
+  try { await api("POST", `/api/chats/${S.chatId}/send`, { text, attachments }); }
+  catch (e) { toast(e.message); input.value = text; S.anexos.chat = anexosAntes; renderTray("chat"); }
 }
 function autosize() {
   const t = $("#input");
@@ -750,7 +848,8 @@ function renderStart() {
 async function startSend() {
   const input = $("#start-input");
   const text = input.value.trim();
-  if (!text || !S.start) return;
+  const attachments = anexosParaEnvio("start");
+  if ((!text && !attachments.length) || !S.start) return;
   const { agentId, provider } = S.start;
   const agent = S.agents.find((a) => a.id === agentId);
   const btn = $("#start-send");
@@ -763,8 +862,10 @@ async function startSend() {
     const chat = await api("POST", "/api/chats", body);
     if (!agent) localStorageSet("lastCwd", body.cwd);
     upsertChat(chat);
-    await api("POST", `/api/chats/${chat.id}/send`, { text });
+    await api("POST", `/api/chats/${chat.id}/send`, { text, attachments });
     input.value = "";
+    S.anexos.start = [];
+    renderTray("start");
     S.start = null;
     location.hash = `#/chat/${chat.id}`;
   } catch (e) { toast(e.message); }
@@ -1168,6 +1269,8 @@ function bind() {
   $("#agents-toggle").onclick = () => { S.agentsCollapsed = !S.agentsCollapsed; renderSideAgents(); };
   $("#agents-add").onclick = (e) => { e.stopPropagation(); location.hash = "#/agents/new"; };
   $("#start-send").onclick = startSend;
+  ligarAnexos("chat", $("#input"), $("#btn-attach"), $("#file-input"), $("#view-chat"));
+  ligarAnexos("start", $("#start-input"), $("#btn-start-attach"), $("#start-file-input"), $("#view-start"));
   $("#start-input").addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); startSend(); }
   });

@@ -10,6 +10,7 @@ import asyncio
 import json
 import os
 import time
+from pathlib import Path
 from collections import deque
 from typing import Any
 
@@ -129,8 +130,15 @@ class Session:
         bus.publish({"type": "tasks", "chat_id": self.chat_id, "tasks": self.background_tasks()})
 
     # --- interface pública --------------------------------------------------------------------
-    async def send(self, text: str) -> None: ...
+    async def send(self, text: str, images: list[dict] | None = None) -> None: ...
     async def interrupt(self) -> None: ...
+
+    def emit_user(self, text: str, images: list[dict] | None) -> None:
+        """Mensagem do usuário no histórico (com as imagens anexadas, se houver)."""
+        event: dict[str, Any] = {"kind": "user", "text": text}
+        if images:
+            event["images"] = [{"file": i["file"], "name": i.get("name") or i["file"]} for i in images]
+        self.emit(event)
     async def apply_settings(self) -> None: ...
     async def close(self) -> None: ...
 
@@ -357,12 +365,27 @@ class ClaudeSession(Session):
                 self.emit({"kind": "system", "level": "warn",
                            "text": f"Limite de uso ({info.rate_limit_type}): {info.status}"})
 
-    async def send(self, text: str) -> None:
-        self.emit({"kind": "user", "text": text})
+    async def send(self, text: str, images: list[dict] | None = None) -> None:
+        self.emit_user(text, images)
         self.set_status("running")
         try:
             await self._ensure_connected()
-            await self.client.query(text)
+            if not images:
+                await self.client.query(text)
+                return
+            # Imagens vão como blocos da própria mensagem (base64), antes do texto.
+            import base64
+            content: list[dict] = [
+                {"type": "image", "source": {"type": "base64", "media_type": i["media_type"],
+                                             "data": base64.b64encode(Path(i["path"]).read_bytes()).decode("ascii")}}
+                for i in images
+            ]
+            content.append({"type": "text", "text": text or "Analise a imagem."})
+
+            async def mensagem():
+                yield {"type": "user", "message": {"role": "user", "content": content}, "parent_tool_use_id": None}
+
+            await self.client.query(mensagem())
         except Exception as e:  # noqa: BLE001
             self.emit({"kind": "error", "text": f"Não consegui enviar para o Claude: {e}"})
             self.set_status("idle")
@@ -635,11 +658,12 @@ class CodexSession(Session):
         self.emit({"kind": "system", "text": f"Codex conectado · modelo {res.get('model')} · sandbox "
                                              f"{_sandbox_label(res.get('sandbox'))} · aprovação {res.get('approvalPolicy')}"})
 
-    async def send(self, text: str) -> None:
-        self.emit({"kind": "user", "text": text})
+    async def send(self, text: str, images: list[dict] | None = None) -> None:
+        self.emit_user(text, images)
         try:
             await self._ensure_thread()
-            items = [{"type": "text", "text": text}]
+            items = [{"type": "text", "text": text or "Analise a imagem."}]
+            items += [{"type": "localImage", "path": i["path"]} for i in images or []]
             if self.turn_id and self.status != "idle":
                 await codex_server.request("turn/steer", {"threadId": self.thread_id, "expectedTurnId": self.turn_id,
                                                           "input": items})

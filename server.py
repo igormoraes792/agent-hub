@@ -265,6 +265,7 @@ async def update_chat(chat_id: str, body: dict):
 async def delete_chat(chat_id: str):
     await manager.close(chat_id)
     store.delete_events(chat_id)
+    store.delete_anexos(chat_id)
     store.chats.delete(chat_id)
     bus.publish({"type": "chat_deleted", "chat_id": chat_id})
     return {"ok": True}
@@ -280,23 +281,64 @@ async def chat_events(chat_id: str):
             "pending": session.pending_requests() if session else []}
 
 
+TIPOS_IMAGEM = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp"}
+MAX_IMAGEM_BYTES = 10 * 1024 * 1024
+MAX_IMAGENS = 10
+
+
+def _salvar_anexos(chat_id: str, anexos: list) -> list[dict]:
+    """Grava as imagens enviadas (base64) em data/anexos/<chat>/ e devolve os metadados."""
+    import base64
+    import uuid
+    if len(anexos) > MAX_IMAGENS:
+        raise HTTPException(400, f"No máximo {MAX_IMAGENS} imagens por mensagem.")
+    salvos = []
+    pasta = store.anexos_dir(chat_id)
+    for a in anexos:
+        tipo = (a.get("media_type") or "").lower()
+        if tipo not in TIPOS_IMAGEM:
+            raise HTTPException(400, f"Tipo de arquivo não suportado: {tipo or 'desconhecido'} (use PNG, JPG, GIF ou WEBP).")
+        try:
+            dados = base64.b64decode(a.get("data") or "", validate=True)
+        except ValueError:
+            raise HTTPException(400, "Imagem inválida.") from None
+        if not dados or len(dados) > MAX_IMAGEM_BYTES:
+            raise HTTPException(400, "Imagem vazia ou maior que 10 MB.")
+        pasta.mkdir(parents=True, exist_ok=True)
+        nome = f"{uuid.uuid4().hex[:12]}.{TIPOS_IMAGEM[tipo]}"
+        (pasta / nome).write_bytes(dados)
+        salvos.append({"file": nome, "name": (a.get("name") or nome)[:120], "media_type": tipo, "path": str(pasta / nome)})
+    return salvos
+
+
 @app.post("/api/chats/{chat_id}/send")
 async def chat_send(chat_id: str, body: dict):
     text = (body.get("text") or "").strip()
-    if not text:
-        raise HTTPException(400, "mensagem vazia")
     chat = store.chats.get(chat_id)
     if not chat:
         raise HTTPException(404)
+    images = _salvar_anexos(chat_id, body.get("attachments") or [])
+    if not text and not images:
+        raise HTTPException(400, "mensagem vazia")
     if chat.get("auto_title"):
-        title = re.sub(r"\s+", " ", text)[:60]
+        title = re.sub(r"\s+", " ", text)[:60] or "Análise de imagem"
         chat = store.chats.update(chat_id, {"title": title, "auto_title": False})
     else:
         chat = store.chats.update(chat_id, {})  # atualiza updated_at para subir na lista
     bus.publish({"type": "chat_updated", "chat": _chat_out(chat)})
     session = manager.get(chat_id)
-    asyncio.create_task(session.send(text))
+    asyncio.create_task(session.send(text, images))
     return {"ok": True}
+
+
+@app.get("/api/chats/{chat_id}/anexos/{nome}")
+async def chat_anexo(chat_id: str, nome: str):
+    if not re.fullmatch(r"[a-f0-9]{12}\.(png|jpg|gif|webp)", nome) or not re.fullmatch(r"\w+", chat_id):
+        raise HTTPException(404)
+    arquivo = store.anexos_dir(chat_id) / nome
+    if not arquivo.is_file():
+        raise HTTPException(404)
+    return FileResponse(arquivo)
 
 
 @app.post("/api/chats/{chat_id}/interrupt")
