@@ -57,7 +57,11 @@ async def only_local_origins(request: Request, call_next):
     origin = request.headers.get("origin")
     if request.method not in ("GET", "HEAD", "OPTIONS") and origin and origin not in ALLOWED_ORIGINS:
         return JSONResponse({"detail": "origem não permitida"}, status_code=403)
-    return await call_next(request)
+    response = await call_next(request)
+    if request.url.path.startswith("/static/"):
+        # Sempre confere com o servidor: depois de uma atualização a tela nova aparece sem precisar de Ctrl+F5.
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 @app.get("/")
@@ -191,7 +195,8 @@ async def pick_folder(body: dict):
 # --- chats --------------------------------------------------------------------------------------
 def _chat_out(chat: dict) -> dict:
     session = manager.sessions.get(chat["id"])
-    return {**effective_chat(chat), "status": session.status if session else "idle"}
+    return {**effective_chat(chat), "status": session.status if session else "idle",
+            "tasks": session.background_tasks() if session else []}
 
 
 @app.get("/api/chats")

@@ -124,12 +124,13 @@ function renderChatList() {
       const el = h("a", { class: `chat-item ${c.id === S.chatId && S.view === "chat" ? "active" : ""}`, href: `#/chat/${c.id}`, title: c.title },
         `<span class="dot ${c.provider}"></span>
          <div class="t">${esc(c.title)}${agent ? `<div class="sub">🤖 ${esc(agent.name)}</div>` : ""}</div>
-         <span class="st ${st}"></span>`);
+         <span class="st ${st}" title="${st === "running" ? "Análise em andamento" : st === "waiting" ? "Aguardando sua aprovação" : ""}"></span>`);
       el.addEventListener("contextmenu", (e) => { e.preventDefault(); openChatMenu(c, e.clientX, e.clientY); });
       list.append(el);
     }
   }
   if (!list.children.length) list.append(h("div", { class: "muted small", style: "padding:10px" }, q ? "Nada encontrado." : "Nenhum chat ainda."));
+  renderSideAgents();  // o ícone de carregamento dos agentes acompanha o estado dos chats
 }
 
 /* Menu do botão direito sobre um chat da barra lateral. */
@@ -189,12 +190,14 @@ async function openChat(id) {
   if (S.chatId !== id) return;
   upsertChat(data.chat);
   S.pending[id] = data.pending || [];
-  S.toolEls = {}; S.planEls = {}; S.stream = null;
+  S.toolEls = {}; S.planEls = {}; S.stream = null; S.activity = null;
   msgs.innerHTML = "";
-  const wrap = h("div", { class: "msg-wrap" });
+  const wrap = h("div", { class: "msg-wrap no-anim" });  // histórico aparece de uma vez, sem animação
   msgs.append(wrap);
   if (!data.events.length) wrap.append(h("div", { class: "sys" }, introText(data.chat)));
   for (const ev of data.events) safeRender(ev, wrap);
+  if (data.chat.status === "idle") finishActivity();
+  requestAnimationFrame(() => wrap.classList.remove("no-anim"));
   renderChatHeader();
   renderApprovals();
   scrollDown(true);
@@ -302,33 +305,154 @@ function safeRender(ev, wrap) {
   }
 }
 
+/* Nome amigável e categoria de cada ação técnica (o detalhe completo fica dentro do grupo recolhido). */
+function toolLabel(name, input = {}) {
+  const n = String(name || "").toLowerCase();
+  const arquivo = (p) => String(p || "").split(/[\\/]/).pop();
+  if (n.includes("bash") || n.includes("shell") || n.includes("powershell")) return input?.description || "Executando comando";
+  if (n === "read") return `Lendo ${arquivo(input?.file_path) || "arquivo"}`;
+  if (n === "write") return `Criando ${arquivo(input?.file_path) || "arquivo"}`;
+  if (n === "edit" || n.includes("arquivo")) return `Editando ${arquivo(input?.file_path) || "arquivo"}`;
+  if (n === "grep" || n === "glob") return "Procurando nos arquivos";
+  if (n.startsWith("web")) return "Pesquisando na web";
+  if (n === "agent" || n === "task" || n.includes("subagente")) return `Delegando: ${input?.description || input?.subagent_type || "subagente"}`;
+  if (n.includes("superset")) return "Consultando o Superset";
+  if (n.includes("powerbi")) return "Consultando o Power BI";
+  if (n === "todowrite") return "Atualizando o plano";
+  if (n === "toolsearch") return "Preparando ferramentas";
+  if (n === "askuserquestion") return "Preparando perguntas";
+  if (n.startsWith("mcp")) return `Usando ${name.split("__")[1] || "integração"}`;
+  return name;
+}
+function toolCategory(name) {
+  const n = String(name || "").toLowerCase();
+  if (n.includes("bash") || n.includes("shell") || n.includes("powershell")) return "comandos";
+  if (["read", "write", "edit", "glob", "grep", "notebookedit"].includes(n) || n.includes("arquivo")) return "arquivos";
+  if (n.includes("superset")) return "Superset";
+  if (n.includes("powerbi")) return "Power BI";
+  if (n.startsWith("web")) return "web";
+  if (n === "agent" || n === "task" || n.includes("subagente")) return "subagentes";
+  return "outros";
+}
+
+/* Grupo de atividade: junta os passos técnicos de um trecho da resposta numa linha discreta,
+   que mostra o passo atual enquanto trabalha e um resumo quando termina. Clique para ver os detalhes. */
+function activityGroup(wrap) {
+  const g = S.activity;
+  if (g && g.box.isConnected && g.box.parentNode === wrap && wrap.lastElementChild === g.box && !g.done) return g;
+  const box = h("div", { class: "msg activity-box" });
+  const det = h("details", { class: "activity running" },
+    `<summary><span class="act-icon"></span><span class="act-text">Trabalhando…</span><span class="act-meta"></span></summary><div class="act-body"></div>`);
+  box.append(det);
+  wrap.append(box);
+  S.activity = { box, det, body: $(".act-body", det), count: 0, cats: {}, done: false };
+  return S.activity;
+}
+function addActivity(wrap, node, label, category) {
+  const g = activityGroup(wrap);
+  g.body.append(node);
+  if (category) {
+    g.count++;
+    g.cats[category] = (g.cats[category] || 0) + 1;
+  }
+  if (label) $(".act-text", g.det).textContent = `${label}…`;
+  $(".act-meta", g.det).textContent = g.count ? `${g.count} ${g.count === 1 ? "etapa" : "etapas"}` : "";
+  return g;
+}
+function finishActivity() {
+  const g = S.activity;
+  if (!g || g.done) return;
+  g.done = true;
+  g.det.classList.remove("running");
+  g.det.classList.add("done");
+  const cats = Object.entries(g.cats).sort((a, b) => b[1] - a[1]).map(([c, n]) => `${c} ×${n}`).join(" · ");
+  $(".act-text", g.det).textContent = g.count ? `${g.count} ${g.count === 1 ? "etapa concluída" : "etapas concluídas"}` : "Preparação concluída";
+  $(".act-meta", g.det).textContent = cats;
+}
+
+/* Botão "Copiar" em cada bloco de código das respostas. */
+function enhanceCode(el) {
+  for (const pre of $$("pre", el)) {
+    if (pre.dataset.copy) continue;
+    pre.dataset.copy = "1";
+    const holder = h("div", { class: "code-block" });
+    pre.replaceWith(holder);
+    holder.append(pre);
+    const lang = ($("code", pre)?.className.match(/language-(\w+)/) || [])[1];
+    const bar = h("div", { class: "code-bar" }, `<span>${esc(lang || "código")}</span>`);
+    const btn = h("button", { class: "copy-btn", type: "button", title: "Copiar código" }, "⧉ Copiar");
+    btn.onclick = async () => {
+      const texto = ($("code", pre) || pre).innerText;
+      try { await navigator.clipboard.writeText(texto); }
+      catch {
+        const ta = h("textarea");
+        ta.value = texto;
+        document.body.append(ta);
+        ta.select();
+        document.execCommand("copy");
+        ta.remove();
+      }
+      btn.textContent = "✓ Copiado";
+      btn.classList.add("ok");
+      setTimeout(() => { btn.textContent = "⧉ Copiar"; btn.classList.remove("ok"); }, 1600);
+    };
+    bar.append(btn);
+    holder.prepend(bar);
+  }
+}
+function mdNode(cls, text) {
+  const el = h("div", { class: cls }, `<div class="md">${md(text)}</div>`);
+  enhanceCode(el);
+  return el;
+}
+
+/* Mensagens de sistema que o usuário precisa ver; as demais (conexão, tarefas internas) vão para o grupo de atividade. */
+const SYS_VISIBLE = /^(Interrompido|Sessão|Importado|A pasta original)/;
+const STATUS_PT = { completed: "concluída", failed: "falhou", stopped: "interrompida", killed: "interrompida", running: "em andamento" };
+
+/* Uma linha só: avisos internos às vezes trazem o comando inteiro (dezenas de linhas). */
+function resumoLinha(texto, max = 140) {
+  let t = String(texto || "").replace(/^Tarefa (completed|failed|stopped|killed|running):/, (_, s) => `Tarefa ${STATUS_PT[s] || s}:`);
+  const primeira = t.split("\n")[0].trim();
+  const cortado = primeira.length > max || t.includes("\n");
+  return (primeira.length > max ? primeira.slice(0, max) : primeira) + (cortado ? " …" : "");
+}
+
 function renderEvent(ev, wrap) {
   wrap = wrap || $("#messages .msg-wrap");
   if (!wrap) return;
-  const nested = ev.parent ? " nested" : "";
+  $("#live-indicator")?.remove();  // sai antes de desenhar (é recolocado no fim por updateLive)
   switch (ev.kind) {
     case "user":
+      finishActivity();
       wrap.append(h("div", { class: "msg user" }, `<div class="bubble">${esc(ev.text)}</div>`));
       break;
-    case "assistant":
-      if (S.stream && !ev.parent) { S.stream.remove(); S.stream = null; }
-      wrap.append(h("div", { class: `msg assistant${nested}` }, `<div class="md">${md(ev.text)}</div>`));
-      break;
-    case "thinking": {
-      const box = h("div", { class: `msg${nested}` });
-      box.append(h("details", { class: "thinking" }, `<summary>💭 Raciocínio</summary><pre>${esc(ev.text)}</pre>`));
-      wrap.append(box);
+    case "assistant": {
+      if (ev.parent) {  // texto intermediário de subagente: detalhe técnico
+        addActivity(wrap, mdNode("act-note", ev.text), null, null);
+        break;
+      }
+      finishActivity();
+      if (S.stream && S.stream.isConnected) {  // reaproveita a bolha que já estava sendo escrita: sem "pulo"
+        S.stream.classList.remove("streaming");
+        $(".md", S.stream).innerHTML = md(ev.text);
+        enhanceCode(S.stream);
+        S.stream = null;
+      } else {
+        wrap.append(mdNode(`msg assistant${ev.greeting ? " greeting" : ""}`, ev.text));
+      }
       break;
     }
+    case "thinking":
+      addActivity(wrap, h("details", { class: "thinking" }, `<summary>💭 Raciocínio</summary><pre>${esc(ev.text)}</pre>`), "Pensando", null);
+      break;
     case "tool": {
       if (S.stream && !ev.parent) { S.stream.remove(); S.stream = null; }
       const d = h("details", { class: "tool" },
-        `<summary><span class="ticon">${toolIcon(ev.name)}</span><span class="tname">${esc(ev.name)}</span>
+        `<summary><span class="ticon">${toolIcon(ev.name)}</span><span class="tname">${esc(toolLabel(ev.name, ev.input))}</span>
          <span class="tsum">${esc(toolSummary(ev.name, ev.input))}</span><span class="tstate">⏳</span></summary>
          <pre class="tin">${esc(formatInput(ev.input))}</pre>`);
-      const box = h("div", { class: `msg${nested}` });
-      box.append(d);
-      wrap.append(box);
+      addActivity(wrap, d, toolLabel(ev.name, ev.input), toolCategory(ev.name));
       S.toolEls[ev.id] = d;
       if (ev.name === "TodoWrite" && ev.input?.todos) {
         renderPlan({ id: "todo", steps: ev.input.todos.map((t) => ({ step: t.content, status: t.status === "in_progress" ? "inProgress" : t.status })) }, wrap);
@@ -347,18 +471,22 @@ function renderEvent(ev, wrap) {
       renderPlan(ev, wrap);
       break;
     case "system":
-      wrap.append(h("div", { class: `sys ${ev.level || ""}` }, esc(ev.text)));
+      if (ev.level === "warn" || SYS_VISIBLE.test(ev.text || "")) wrap.append(h("div", { class: `sys ${ev.level || ""}` }, esc(ev.text)));
+      else addActivity(wrap, h("div", { class: "act-sys", title: ev.text || "" }, esc(resumoLinha(ev.text))), null, null);
       break;
     case "error":
+      finishActivity();
       wrap.append(h("div", { class: "msg" }, `<div class="err-box">${esc(ev.text)}</div>`));
       break;
     case "result": {
-      if (S.stream) { S.stream.remove(); S.stream = null; }
-      const parts = [];
-      if (ev.duration_ms) parts.push(`${(ev.duration_ms / 1000).toFixed(1)}s`);
-      if (ev.usage && (ev.usage.input || ev.usage.output)) parts.push(`${fmtTok(ev.usage.input)} entrada / ${fmtTok(ev.usage.output)} saída`);
-      if (ev.cost_usd) parts.push(`~US$ ${ev.cost_usd.toFixed(3)}`);
-      wrap.append(h("div", { class: "result" }, `${ev.is_error ? "✗" : "✓"} ${esc(parts.join(" · "))}`));
+      if (S.stream) { S.stream.classList.remove("streaming"); S.stream = null; }
+      finishActivity();
+      const detalhes = [];
+      if (ev.usage && (ev.usage.input || ev.usage.output)) detalhes.push(`${fmtTok(ev.usage.input)} tokens de entrada / ${fmtTok(ev.usage.output)} de saída`);
+      if (ev.cost_usd) detalhes.push(`custo estimado ~US$ ${ev.cost_usd.toFixed(3)}`);
+      const tempo = ev.duration_ms ? `${(ev.duration_ms / 1000).toFixed(ev.duration_ms < 10000 ? 1 : 0).replace(".", ",")}s` : "";
+      wrap.append(h("div", { class: `result${ev.is_error ? " err" : ""}`, title: detalhes.join(" · ") },
+        `${ev.is_error ? "✗ Terminou com erro" : "✓ Concluído"}${tempo ? ` em ${tempo}` : ""}`));
       break;
     }
   }
@@ -378,9 +506,29 @@ function renderPlan(ev, wrap) {
   S.planEls[ev.id] = el;
 }
 
+/* Indicador ao vivo no fim da conversa: aparece quando o chat ainda trabalha mas nada está se mexendo na tela
+   (ex.: subagentes rodando em segundo plano depois que a resposta principal terminou). */
+function updateLive() {
+  const wrap = $("#messages .msg-wrap");
+  $("#live-indicator")?.remove();
+  if (!wrap || S.view !== "chat") return;
+  const c = currentChat();
+  if (!c) return;
+  const tasks = c.tasks || [];
+  const waiting = (S.pending[c.id] || []).length > 0;
+  const busy = c.status && c.status !== "idle" && !waiting;
+  const activityLive = S.activity && !S.activity.done && wrap.lastElementChild === S.activity.box;
+  const streaming = S.stream && S.stream.isConnected;
+  if (!busy || (!tasks.length && (activityLive || streaming))) return;
+  const texto = tasks.length ? `Em segundo plano: ${tasks.join(" · ")}` : "Trabalhando…";
+  wrap.append(h("div", { id: "live-indicator", class: "live", title: texto },
+    `<span class="live-spin"></span><span class="live-text">${esc(texto)}</span>`));
+}
+
 function onDelta(text) {
   const wrap = $("#messages .msg-wrap");
   if (!wrap) return;
+  $("#live-indicator")?.remove();
   if (!S.stream || !S.stream.isConnected) {
     S.stream = h("div", { class: "msg assistant streaming" }, '<div class="md"></div>');
     S.stream._text = "";
@@ -388,12 +536,14 @@ function onDelta(text) {
   }
   S.stream._text += text;
   $(".md", S.stream).innerHTML = md(S.stream._text);
+  updateLive();
   scrollDown();
 }
 
 function scrollDown(force = false) {
   const m = $("#messages");
-  if (force || m.scrollHeight - m.scrollTop - m.clientHeight < 160) m.scrollTop = m.scrollHeight;
+  if (force) m.scrollTop = m.scrollHeight;  // abrir o chat: vai direto ao fim
+  else if (m.scrollHeight - m.scrollTop - m.clientHeight < 200) m.scrollTo({ top: m.scrollHeight, behavior: "smooth" });
 }
 
 /* ------------------------------------------------------------------ aprovações */
@@ -402,6 +552,7 @@ function renderApprovals() {
   box.innerHTML = "";
   for (const req of S.pending[S.chatId] || []) box.append(approvalCard(req));
   renderChatHeader();
+  updateLive();
   scrollDown(true);
 }
 
@@ -456,6 +607,7 @@ function approvalCard(req) {
 
   if (req.kind === "plan") {
     card.append(h("div", { class: "md" }, md(req.detail)));
+    enhanceCode(card);
     const msg = h("input", { class: "input grow", placeholder: "Ajustes no plano (opcional)…" });
     const actions = h("div", { class: "actions" });
     actions.append(h("button", { class: "btn primary", onclick: () => respond({ decision: "allow" }) }, "Aprovar e executar"));
@@ -572,6 +724,7 @@ function renderStart() {
     body.innerHTML = `<div class="msg-wrap">
       <div class="msg assistant greeting"><div class="who">🤖 ${esc(agent.name)}</div><div class="md">${md(agentGreeting(agent))}</div></div>
     </div>`;
+    enhanceCode(body);
   } else {
     body.innerHTML = `<div class="start-wrap">
       <div class="card"><h3>IA</h3>
@@ -635,8 +788,19 @@ function renderSideAgents() {
   for (const a of S.agents) {
     const active = S.view === "start" && S.start?.agentId === a.id;
     list.append(h("a", { class: `side-agent ${active ? "active" : ""}`, href: `#/novo/${a.id}`, title: a.description || a.name },
-      `<span class="dot ${a.provider}"></span><span class="t">${esc(a.name)}</span>`));
+      `<span class="dot ${a.provider}"></span><span class="t">${esc(a.name)}</span><span class="st ${agentStatus(a.id)}" title="${agentStatusTitle(a.id)}"></span>`));
   }
+}
+
+/* Estado de um agente na barra lateral: "waiting" se algum chat dele aguarda aprovação, "running" se algum trabalha. */
+function agentStatus(agentId) {
+  const chats = S.chats.filter((c) => c.agent_id === agentId);
+  if (chats.some((c) => (S.pending[c.id] || []).length)) return "waiting";
+  if (chats.some((c) => c.status === "running" || c.status === "waiting")) return "running";
+  return "";
+}
+function agentStatusTitle(agentId) {
+  return { waiting: "Um chat deste agente aguarda sua aprovação", running: "Análise em andamento" }[agentStatus(agentId)] || "";
 }
 function localStorageGet(k) { try { return localStorage.getItem("hub." + k); } catch { return null; } }
 function localStorageSet(k, v) { try { localStorage.setItem("hub." + k, v); } catch { /* sem storage */ } }
@@ -920,6 +1084,7 @@ function connectWs() {
       case "event":
         if (m.chat_id === S.chatId && S.view === "chat") {
           safeRender(m.event);
+          updateLive();
           scrollDown(m.event.kind === "user");
         }
         break;
@@ -929,6 +1094,14 @@ function connectWs() {
       case "status": {
         const c = S.chats.find((x) => x.id === m.chat_id);
         if (c) { c.status = m.status; renderChatList(); if (c.id === S.chatId) renderChatHeader(); }
+        if (m.status === "idle" && m.chat_id === S.chatId) finishActivity();
+        if (m.chat_id === S.chatId) updateLive();
+        break;
+      }
+      case "tasks": {
+        const c = S.chats.find((x) => x.id === m.chat_id);
+        if (c) c.tasks = m.tasks;
+        if (m.chat_id === S.chatId) updateLive();
         break;
       }
       case "approval":

@@ -121,6 +121,13 @@ class Session:
     def pending_requests(self) -> list[dict]:
         return [p["request"] for p in self.pending.values()]
 
+    def background_tasks(self) -> list[str]:
+        """Descrições das tarefas/subagentes que continuam rodando em segundo plano."""
+        return list(getattr(self, "tasks_running", {}).values())
+
+    def _publish_tasks(self) -> None:
+        bus.publish({"type": "tasks", "chat_id": self.chat_id, "tasks": self.background_tasks()})
+
     # --- interface pública --------------------------------------------------------------------
     async def send(self, text: str) -> None: ...
     async def interrupt(self) -> None: ...
@@ -142,6 +149,8 @@ class ClaudeSession(Session):
         self.connect_error: str | None = None
         self.stderr_tail: deque[str] = deque(maxlen=40)
         self.announced_init = False
+        self.restart_pending = False
+        self.tasks_running: dict[str, str] = {}  # subagentes/tarefas em segundo plano ainda ativos: id -> descrição
 
     def _options(self):
         from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions
@@ -218,6 +227,8 @@ class ClaudeSession(Session):
         finally:
             self.client = None
             self.ready.set()
+            self.tasks_running.clear()  # com a sessão fechada, as tarefas em segundo plano também param
+            self._publish_tasks()
             self.deny_all_pending("Sessão encerrada.")
             self.set_status("idle")
 
@@ -266,10 +277,15 @@ class ClaudeSession(Session):
             return
 
         if isinstance(msg, TaskStartedMessage):
-            self.emit({"kind": "system", "text": f"Tarefa iniciada: {msg.description or msg.task_type or ''}"})
+            self.tasks_running[msg.task_id] = _uma_linha(msg.description or msg.task_type, 80)
+            self._publish_tasks()
+            self.emit({"kind": "system", "text": f"Tarefa iniciada: {_uma_linha(msg.description or msg.task_type)}"})
             return
         if isinstance(msg, TaskNotificationMessage):
-            self.emit({"kind": "system", "text": f"Tarefa {msg.status}: {msg.summary or ''}"})
+            self.tasks_running.pop(msg.task_id, None)
+            self._publish_tasks()
+            status = {"completed": "concluída", "failed": "falhou", "stopped": "interrompida"}.get(msg.status, msg.status)
+            self.emit({"kind": "system", "text": f"Tarefa {status}: {_uma_linha(msg.summary)}"})
             return
 
         if isinstance(msg, SystemMessage):
@@ -329,7 +345,10 @@ class ClaudeSession(Session):
                 self.emit({"kind": "error", "text": f"Turno terminou com erro: {errs}"})
             self.emit({"kind": "result", "cost_usd": msg.total_cost_usd, "duration_ms": msg.duration_ms,
                        "turns": msg.num_turns, "usage": _usage_summary(msg.usage), "is_error": msg.is_error})
-            self.set_status("idle")
+            # Subagentes em segundo plano continuam trabalhando depois do fim do turno: o chat segue "trabalhando".
+            self.set_status("running" if self.tasks_running else "idle")
+            if self.restart_pending and not self.tasks_running:  # configuração que exige sessão nova
+                asyncio.create_task(self._reabrir())
             return
 
         if isinstance(msg, RateLimitEvent):
@@ -365,9 +384,24 @@ class ClaudeSession(Session):
         model = chat.get("model")
         try:
             await self.client.set_model(None if model in (None, "", "default") else model)
-            await self.client.set_permission_mode(chat.get("permission_mode") or "default")
         except Exception as e:  # noqa: BLE001
-            self.emit({"kind": "error", "text": f"Não consegui aplicar as configurações: {e}"})
+            self.emit({"kind": "error", "text": f"Não consegui trocar o modelo: {e}"})
+        try:
+            await self.client.set_permission_mode(chat.get("permission_mode") or "default")
+        except Exception:  # noqa: BLE001
+            # Alguns modos (ex.: "Sem perguntar nada") só podem ser ativados ao abrir a sessão.
+            self.restart_pending = True
+            self.emit({"kind": "system", "level": "warn",
+                       "text": "O novo modo de permissões vale a partir da próxima mensagem: a sessão será reaberta "
+                               "automaticamente ao fim desta resposta, mantendo o histórico."})
+            if self.status == "idle" and not self.tasks_running:
+                await self._reabrir()
+
+    async def _reabrir(self) -> None:
+        """Fecha a sessão; a próxima mensagem a reabre (com resume) já com as configurações novas."""
+        self.restart_pending = False
+        await asyncio.sleep(0.5)
+        await self.close()
 
     async def close(self) -> None:
         self.deny_all_pending("Sessão encerrada.")
@@ -401,6 +435,15 @@ def extra_instructions(chat: dict, agent: dict | None) -> str:
         parts.append("Antes da primeira mensagem, o usuário viu esta saudação, apresentada como sua:\n\n"
                      + chat["greeting"])
     return "\n\n".join(parts)
+
+
+def _uma_linha(texto, limite: int = 140) -> str:
+    """Resumo de uma linha para avisos internos (descrições de tarefa às vezes trazem o comando inteiro)."""
+    texto = str(texto or "").strip()
+    primeira = texto.split("\n", 1)[0].strip()
+    if len(primeira) > limite:
+        return primeira[:limite] + " …"
+    return primeira + (" …" if "\n" in texto else "")
 
 
 def _content_text(content) -> str:
@@ -880,7 +923,8 @@ class Manager:
             await asyncio.sleep(60)
             now = time.time()
             for cid, s in list(self.sessions.items()):
-                if s.status == "idle" and now - s.last_activity > IDLE_DISCONNECT_SECONDS:
+                if (s.status == "idle" and not getattr(s, "tasks_running", None)
+                        and now - s.last_activity > IDLE_DISCONNECT_SECONDS):
                     await self.close(cid)
 
 

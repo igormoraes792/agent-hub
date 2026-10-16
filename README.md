@@ -68,6 +68,11 @@ hub/sessions.py     Sessões Claude (Agent SDK) e Codex (codex app-server), apro
 hub/providers.py    Descoberta dos executáveis e modelos
 hub/store.py        Persistência em JSON
 static/             Interface (HTML/CSS/JS, sem build)
+agentes/            Pastas de trabalho dos agentes (manual, ferramentas e modelos de cada um)
+  conferencia-faturamento/   Conferente de Faturamento + extratores (Power BI × Superset)
 ```
+
+Os agentes não deixam arquivos de resultado nas pastas: o que é intermediário fica em
+`%TEMP%\agent-hub\` e se apaga sozinho depois de 2 dias. Relatórios e planilhas só são gerados quando você pede.
 
 Por segurança, a API só aceita conexões do próprio computador (127.0.0.1) e recusa pedidos vindos de outros sites.

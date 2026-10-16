@@ -2,3 +2,5 @@
 data/
 __pycache__/
 *.pyc
+# agentes: permissões locais do Claude Code
+agentes/*/.claude/
