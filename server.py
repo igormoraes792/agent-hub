@@ -29,8 +29,17 @@ AGENT_FIELDS = ("name", "description", "provider", "model", "effort", "prompt", 
                 "permission_mode", "sandbox", "approval_policy", "cwd", "subagents", "color")
 
 
+def _ignore_dropped_connections(loop: asyncio.AbstractEventLoop, context: dict) -> None:
+    """No Windows, quando o navegador some sem se despedir (aba fechada, PC suspenso), o asyncio imprime
+    ConnectionResetError [WinError 10054]. É só uma desconexão normal; os demais erros seguem sendo mostrados."""
+    if isinstance(context.get("exception"), (ConnectionResetError, ConnectionAbortedError, BrokenPipeError)):
+        return
+    loop.default_exception_handler(context)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    asyncio.get_running_loop().set_exception_handler(_ignore_dropped_connections)
     providers.claude_meta.refresh_in_background()
     reaper = asyncio.create_task(manager.reap_idle())
     yield
@@ -391,8 +400,8 @@ async def websocket(ws: WebSocket):
         await ws.send_json({"type": "hello", "statuses": manager.statuses(), "pending": manager.all_pending()})
         while True:
             await ws.send_json(await queue.get())
-    except (WebSocketDisconnect, RuntimeError):
-        pass
+    except (WebSocketDisconnect, RuntimeError, ConnectionError, OSError):
+        pass  # aba fechada, recarregada ou PC suspenso: desconexão normal
     finally:
         bus.unsubscribe(queue)
 
