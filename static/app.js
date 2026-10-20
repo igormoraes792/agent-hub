@@ -6,7 +6,7 @@ const S = {
   chats: [],
   agents: [],
   chatId: null,
-  view: "empty",
+  view: "start",
   pending: {},        // chatId -> [request]
   stream: null,       // elemento da resposta em streaming do chat aberto
   toolEls: {},        // toolId -> <details>
@@ -95,7 +95,7 @@ function readProviderFields(prefix, provider) {
 /* ------------------------------------------------------------------ navegação */
 function show(view) {
   S.view = view;
-  for (const v of ["empty", "chat", "agents", "settings", "import", "start"]) $(`#view-${v}`).classList.toggle("hidden", v !== view);
+  for (const v of ["chat", "agents", "settings", "import", "start"]) $(`#view-${v}`).classList.toggle("hidden", v !== view);
   $("#sidebar").classList.remove("open");
   renderChatList();
   renderSideAgents();
@@ -224,6 +224,8 @@ function renderChatHeader() {
   pill.className = `status-pill ${st}`;
   pill.textContent = { running: "● trabalhando…", waiting: "⏳ aguardando você", idle: "" }[st] || "";
   $("#btn-stop").classList.toggle("hidden", st === "idle");
+  S.chatBusy = st !== "idle";
+  atualizarBotaoEnviar("chat");
   const agent = S.agents.find((a) => a.id === c.agent_id);
   const modelLabel = modelOptions(c.provider).find((m) => m.value === (c.model ?? ""))?.label || c.model || "padrão";
   $("#composer-info").textContent = `${modelLabel}${c.effort ? " · " + (EFFORT_LABEL[c.effort] || c.effort) : ""}${agent ? " · 🤖 " + agent.name : ""}`;
@@ -372,6 +374,34 @@ function finishActivity() {
   if (!g.count) g.box.classList.add("sem-etapas");  // só avisos técnicos (ex.: conexão): não ocupa espaço na conversa
 }
 
+async function copiarTexto(texto) {
+  try { await navigator.clipboard.writeText(texto); }
+  catch {
+    const ta = h("textarea");
+    ta.value = texto;
+    document.body.append(ta);
+    ta.select();
+    document.execCommand("copy");
+    ta.remove();
+  }
+}
+
+/* Ações que aparecem ao passar o mouse numa resposta (como no Claude Desktop). */
+const ICON_COPIAR = `<svg viewBox="0 0 20 20" width="15" height="15" aria-hidden="true"><rect x="7" y="7" width="9" height="9" rx="2" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M13 7V5.5A1.5 1.5 0 0 0 11.5 4h-6A1.5 1.5 0 0 0 4 5.5v6A1.5 1.5 0 0 0 5.5 13H7" stroke="currentColor" stroke-width="1.6" fill="none"/></svg>`;
+function acoesMensagem(el, texto) {
+  if (el.querySelector(":scope > .msg-actions")) return;
+  const bar = h("div", { class: "msg-actions" });
+  const b = h("button", { class: "act-btn", type: "button", title: "Copiar resposta" }, ICON_COPIAR);
+  b.onclick = async () => {
+    await copiarTexto(texto);
+    b.innerHTML = "✓";
+    b.classList.add("ok");
+    setTimeout(() => { b.innerHTML = ICON_COPIAR; b.classList.remove("ok"); }, 1500);
+  };
+  bar.append(b);
+  el.append(bar);
+}
+
 /* Botão "Copiar" em cada bloco de código das respostas. */
 function enhanceCode(el) {
   for (const pre of $$("pre", el)) {
@@ -384,16 +414,7 @@ function enhanceCode(el) {
     const bar = h("div", { class: "code-bar" }, `<span>${esc(lang || "código")}</span>`);
     const btn = h("button", { class: "copy-btn", type: "button", title: "Copiar código" }, "⧉ Copiar");
     btn.onclick = async () => {
-      const texto = ($("code", pre) || pre).innerText;
-      try { await navigator.clipboard.writeText(texto); }
-      catch {
-        const ta = h("textarea");
-        ta.value = texto;
-        document.body.append(ta);
-        ta.select();
-        document.execCommand("copy");
-        ta.remove();
-      }
+      await copiarTexto(($("code", pre) || pre).innerText);
       btn.textContent = "✓ Copiado";
       btn.classList.add("ok");
       setTimeout(() => { btn.textContent = "⧉ Copiar"; btn.classList.remove("ok"); }, 1600);
@@ -413,8 +434,12 @@ const SYS_VISIBLE = /^(Interrompido|Sessão|Importado|A pasta original)/;
 const STATUS_PT = { completed: "concluída", failed: "falhou", stopped: "interrompida", killed: "interrompida", running: "em andamento" };
 
 /* Uma linha só: avisos internos às vezes trazem o comando inteiro (dezenas de linhas). */
+const PARECE_COMANDO = /^\s*(\w+=|cd\s|python|pwsh|powershell|bash|cmd|\$|\.\/|[A-Za-z]:[\\/])|&&|\$\(|\|\s*\w/;
 function resumoLinha(texto, max = 140) {
   let t = String(texto || "").replace(/^Tarefa (completed|failed|stopped|killed|running):/, (_, s) => `Tarefa ${STATUS_PT[s] || s}:`);
+  // Avisos antigos traziam o próprio comando como "nome" da tarefa: mostra um texto amigável (o comando fica no tooltip).
+  const m = t.match(/^(Tarefa [^:]+): ([\s\S]*)$/);
+  if (m && PARECE_COMANDO.test(m[2].split("\n")[0])) return `${m[1]}: comando em segundo plano`;
   const primeira = t.split("\n")[0].trim();
   const cortado = primeira.length > max || t.includes("\n");
   return (primeira.length > max ? primeira.slice(0, max) : primeira) + (cortado ? " …" : "");
@@ -445,9 +470,12 @@ function renderEvent(ev, wrap) {
         S.stream.classList.remove("streaming");
         $(".md", S.stream).innerHTML = md(ev.text);
         enhanceCode(S.stream);
+        acoesMensagem(S.stream, ev.text);
         S.stream = null;
       } else {
-        wrap.append(mdNode(`msg assistant${ev.greeting ? " greeting" : ""}`, ev.text));
+        const node = mdNode(`msg assistant${ev.greeting ? " greeting" : ""}`, ev.text);
+        wrap.append(node);
+        if (!ev.greeting) acoesMensagem(node, ev.text);
       }
       break;
     }
@@ -694,6 +722,7 @@ function renderTray(onde) {
   const tray = $(onde === "chat" ? "#tray" : "#start-tray");
   const lista = S.anexos[onde];
   tray.classList.toggle("hidden", !lista.length);
+  atualizarBotaoEnviar(onde);
   tray.innerHTML = "";
   lista.forEach((a, i) => {
     const item = h("div", { class: "att", title: a.name }, `<img src="${a.preview}" alt="${esc(a.name)}">`);
@@ -725,6 +754,15 @@ function ligarAnexos(onde, textarea, botao, campoArquivo, areaSoltar) {
   });
 }
 
+/* Botão ↑: "aceso" só com texto ou imagem. Com o chat trabalhando aparece o ■ (parar) e o ↑ só volta se houver algo a enviar. */
+function atualizarBotaoEnviar(onde) {
+  const input = $(onde === "chat" ? "#input" : "#start-input");
+  const btn = $(onde === "chat" ? "#btn-send" : "#start-send");
+  const pronto = !!input.value.trim() || S.anexos[onde].length > 0;
+  btn.classList.toggle("pronto", pronto);
+  if (onde === "chat") btn.classList.toggle("hidden", !!S.chatBusy && !pronto);
+}
+
 async function send() {
   const input = $("#input");
   const text = input.value.trim();
@@ -736,6 +774,7 @@ async function send() {
   renderTray("chat");
   autosize();
   hideSlash();
+  atualizarBotaoEnviar("chat");
   try { await api("POST", `/api/chats/${S.chatId}/send`, { text, attachments }); }
   catch (e) { toast(e.message); input.value = text; S.anexos.chat = anexosAntes; renderTray("chat"); }
 }
@@ -806,16 +845,13 @@ function renderStart() {
   const agent = S.agents.find((a) => a.id === agentId);
   const badge = $("#start-badge");
   badge.textContent = provider;
-  badge.className = `badge ${provider}`;
-  $("#start-title").textContent = agent ? agent.name : "Novo chat";
+  badge.className = `badge ${provider}${agent ? "" : " hidden"}`;
+  $("#start-title").textContent = agent ? agent.name : "";
   $("#start-edit-agent").classList.toggle("hidden", !agent);
+  $("#view-start").classList.toggle("hero", !agent);  // chat livre: saudação e caixa de mensagem no centro
   const cwd = agent?.cwd || localStorageGet("lastCwd") || S.meta.home;
-  const settings = `
-      ${provider === "codex" && !S.meta.codex.available ? `<div class="err-box">codex.exe não encontrado. Instale a extensão do Codex no VS Code ou defina CODEX_PATH.</div>` : ""}
-      <div class="grid2">${providerFieldsHtml("ds", provider, agent || {})}</div>
-      <label>Pasta de trabalho ${folderFieldHtml("ds-cwd", cwd)}</label>
-      <div class="hint">A pasta não pode ser trocada depois da primeira mensagem. Modelo, esforço e permissões podem ser ajustados a qualquer momento em ⚙️ Config. do chat.</div>`;
   const body = $("#start-body");
+  const opts = $("#start-opts");
   if (agent) {
     // Agente: a tela é só a mensagem de boas-vindas. Modelo, permissões e pasta vêm do agente
     // e só mudam nas configurações dele (botão "Editar agente").
@@ -823,26 +859,48 @@ function renderStart() {
       <div class="msg assistant greeting"><div class="who">🤖 ${esc(agent.name)}</div><div class="md">${md(agentGreeting(agent))}</div></div>
     </div>`;
     enhanceCode(body);
+    opts.innerHTML = "";
   } else {
-    body.innerHTML = `<div class="start-wrap">
-      <div class="card"><h3>IA</h3>
-        <div class="seg" id="start-provider">
+    body.innerHTML = `<div class="hero-box"><span class="logo hero-logo">A</span><h1 class="hero-title">${saudacao()}</h1></div>`;
+    opts.innerHTML = `
+      <div class="opts-row">
+        <div class="seg seg-sm" id="start-provider">
           <button type="button" data-p="claude" class="${provider === "claude" ? "on" : ""}">Claude</button>
           <button type="button" data-p="codex" class="${provider === "codex" ? "on" : ""}">Codex</button>
         </div>
-        <div class="hint">Dica: para usar instruções e configurações salvas, escolha um agente na barra lateral.</div>
-      </div>
-      <div class="card"><h3>Configurações desta conversa</h3>${settings}</div>
-      <div class="hint center">O chat é criado quando você enviar a primeira mensagem.</div>
-    </div>`;
+        <details class="opts"><summary>Modelo, permissões e pasta</summary>
+          ${provider === "codex" && !S.meta.codex.available ? `<div class="err-box">codex.exe não encontrado. Instale a extensão do Codex no VS Code ou defina CODEX_PATH.</div>` : ""}
+          <div class="grid2">${providerFieldsHtml("ds", provider, {})}</div>
+          <label>Pasta de trabalho ${folderFieldHtml("ds-cwd", cwd)}</label>
+          <div class="hint">A pasta não pode ser trocada depois da primeira mensagem. Dica: para instruções e configurações salvas, escolha um agente na barra lateral.</div>
+        </details>
+      </div>`;
+    bindFolderButtons(opts, "Pasta de trabalho desta conversa");
+    $$("select", opts).forEach((s) => s.addEventListener("change", atualizarInfoStart));
   }
-  bindFolderButtons(body, "Pasta de trabalho desta conversa");
   $$("#start-provider button").forEach((b) => (b.onclick = () => {
     S.start.provider = b.dataset.p;
     localStorageSet("lastProvider", b.dataset.p);
     renderStart();
   }));
+  atualizarInfoStart();
+  atualizarBotaoEnviar("start");
   renderSideAgents();
+}
+
+function saudacao() {
+  const h = new Date().getHours();
+  return h < 5 ? "Boa noite" : h < 12 ? "Bom dia" : h < 18 ? "Boa tarde" : "Boa noite";
+}
+
+/* Etiqueta do modelo dentro da caixa de mensagem da tela de início. */
+function atualizarInfoStart() {
+  if (!S.start) return;
+  const agent = S.agents.find((a) => a.id === S.start.agentId);
+  const provider = S.start.provider;
+  const valor = agent ? (agent.model ?? "") : ($("#ds-model")?.value ?? "");
+  const nome = modelOptions(provider).find((m) => String(m.value) === String(valor))?.label || valor || "padrão";
+  $("#start-info").textContent = `${provider === "claude" ? "Claude" : "Codex"} · ${nome}`;
 }
 
 async function startSend() {
@@ -1142,12 +1200,17 @@ async function renderSettings() {
       <div id="mcp-card-body"><div class="muted small" style="margin-top:8px">Verificando…</div></div>
       <div class="row gap" style="margin-top:10px"><button class="btn" id="st-mcp-recheck">↻ Verificar novamente</button></div>
     </div>
-    <div class="card"><h3>Tema</h3>
+    <div class="card"><h3>Aparência</h3>
+      <label>Tema</label>
       <div class="seg" id="st-theme"><button data-t="">Sistema</button><button data-t="light">Claro</button><button data-t="dark">Escuro</button></div>
+      <label>Fonte das respostas</label>
+      <div class="seg" id="st-fonte"><button data-f="">Estilo Claude (serifada)</button><button data-f="sans">Sem serifa</button></div>
     </div>`;
   $("#st-refresh").onclick = async () => { await api("POST", "/api/meta/refresh"); toast("Consultando o Claude… (alguns segundos)"); setTimeout(async () => { await loadMeta(); renderSettings(); }, 8000); };
   const theme = localStorageGet("theme") || "";
   $$("#st-theme button").forEach((b) => { b.classList.toggle("on", b.dataset.t === theme); b.onclick = () => { setTheme(b.dataset.t); renderSettings(); }; });
+  const fonte = localStorageGet("fonte") || "";
+  $$("#st-fonte button").forEach((b) => { b.classList.toggle("on", b.dataset.f === fonte); b.onclick = () => { setFonte(b.dataset.f); renderSettings(); }; });
   const setup = async (mode) => {
     try { await api("POST", "/api/codex/sandbox/setup", { mode }); toast("Configuração do sandbox iniciada…"); }
     catch (e) { toast(e.message); }
@@ -1162,6 +1225,11 @@ async function renderSettings() {
     const el = $("#st-sbx");
     if (el) el.textContent = label;
   }
+}
+function setFonte(f) {
+  localStorageSet("fonte", f);
+  if (f) document.documentElement.dataset.fonte = f;
+  else delete document.documentElement.dataset.fonte;
 }
 function setTheme(t) {
   localStorageSet("theme", t);
@@ -1259,13 +1327,11 @@ function route() {
   if (hash === "#/import") { show("import"); renderImport(); return; }
   const nv = hash.match(/^#\/novo(?:\/(\w+))?(?:\?p=(claude|codex))?/);
   if (nv) return openStart(nv[1] || null, nv[2] || null);
-  S.chatId = null;
-  show("empty");
+  openStart(null, null);  // tela inicial = novo chat (como no Claude Desktop)
 }
 
 function bind() {
-  $("#btn-new-chat").onclick = () => (location.hash = "#/novo");
-  $$("[data-new]").forEach((b) => (b.onclick = () => (location.hash = `#/novo?p=${b.dataset.new}`)));
+  $("#btn-new-chat").onclick = () => { if (location.hash === "#/novo") openStart(null, null); else location.hash = "#/novo"; };
   $("#agents-toggle").onclick = () => { S.agentsCollapsed = !S.agentsCollapsed; renderSideAgents(); };
   $("#agents-add").onclick = (e) => { e.stopPropagation(); location.hash = "#/agents/new"; };
   $("#start-send").onclick = startSend;
@@ -1277,6 +1343,7 @@ function bind() {
   $("#start-input").addEventListener("input", (e) => {
     e.target.style.height = "auto";
     e.target.style.height = Math.min(e.target.scrollHeight, 260) + "px";
+    atualizarBotaoEnviar("start");
   });
   $("#start-edit-agent").onclick = () => S.start?.agentId && (location.hash = `#/agents/${S.start.agentId}`);
   $("#btn-agents").onclick = () => (location.hash = "#/agents");
@@ -1294,7 +1361,7 @@ function bind() {
   $$("[data-action=menu]").forEach((b) => (b.onclick = () => $("#sidebar").classList.toggle("open")));
 
   const input = $("#input");
-  input.addEventListener("input", () => { autosize(); renderSlash(); });
+  input.addEventListener("input", () => { autosize(); renderSlash(); atualizarBotaoEnviar("chat"); });
   input.addEventListener("keydown", (e) => {
     const menuOpen = !$("#slash-menu").classList.contains("hidden");
     if (menuOpen && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
@@ -1335,6 +1402,7 @@ function bind() {
 
 (async function init() {
   setTheme(localStorageGet("theme") || "");
+  setFonte(localStorageGet("fonte") || "");
   bind();
   try { await loadMeta(); } catch (e) { toast("Falha ao carregar: " + e.message); return; }
   await Promise.all([loadChats(), loadAgents()]);

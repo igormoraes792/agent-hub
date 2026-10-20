@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 from pathlib import Path
 from collections import deque
@@ -176,7 +177,7 @@ class ClaudeSession(Session):
             if sub and sub.get("provider") == "claude":
                 subagents[_slug(sub["name"])] = AgentDefinition(
                     description=sub.get("description") or sub["name"],
-                    prompt=sub.get("prompt") or "",
+                    prompt=IDIOMA + "\n\n" + (sub.get("prompt") or ""),
                     tools=sub.get("tools") or None,
                     model=None if sub.get("model") in (None, "", "default") else sub["model"],
                 )
@@ -285,15 +286,16 @@ class ClaudeSession(Session):
             return
 
         if isinstance(msg, TaskStartedMessage):
-            self.tasks_running[msg.task_id] = _uma_linha(msg.description or msg.task_type, 80)
+            nome = _nome_tarefa(msg.description or msg.task_type)
+            self.tasks_running[msg.task_id] = nome[:80]
             self._publish_tasks()
-            self.emit({"kind": "system", "text": f"Tarefa iniciada: {_uma_linha(msg.description or msg.task_type)}"})
+            self.emit({"kind": "system", "text": f"Tarefa iniciada: {nome}"})
             return
         if isinstance(msg, TaskNotificationMessage):
             self.tasks_running.pop(msg.task_id, None)
             self._publish_tasks()
             status = {"completed": "concluída", "failed": "falhou", "stopped": "interrompida"}.get(msg.status, msg.status)
-            self.emit({"kind": "system", "text": f"Tarefa {status}: {_uma_linha(msg.summary)}"})
+            self.emit({"kind": "system", "text": f"Tarefa {status}: {_nome_tarefa(msg.summary)}"})
             return
 
         if isinstance(msg, SystemMessage):
@@ -449,15 +451,32 @@ def effective_chat(chat: dict) -> dict:
     return {**chat, **{k: agent[k] for k in AGENT_CONTROLLED if agent.get(k) not in (None, "")}}
 
 
+IDIOMA = ("Idioma: escreva SEMPRE em português do Brasil, em tudo o que aparece para o usuário: respostas, raciocínio "
+          "interno (thinking), planos e listas de tarefas, a descrição curta de cada comando/ferramenta (campo "
+          "description), nomes de tarefas e subagentes e mensagens intermediárias. Mantenha em inglês apenas código, "
+          "comandos, nomes de arquivos/colunas e termos técnicos sem tradução.")
+
+
 def extra_instructions(chat: dict, agent: dict | None) -> str:
-    """Instruções do agente + a saudação que o usuário viu antes de escrever."""
-    parts = []
+    """Idioma + instruções do agente + a saudação que o usuário viu antes de escrever."""
+    parts = [IDIOMA]
     if agent and agent.get("prompt"):
         parts.append(agent["prompt"])
     if chat.get("greeting"):
         parts.append("Antes da primeira mensagem, o usuário viu esta saudação, apresentada como sua:\n\n"
                      + chat["greeting"])
     return "\n\n".join(parts)
+
+
+_PARECE_COMANDO = re.compile(r"""^\s*(\w+=|cd\s|python|pwsh|powershell|bash|cmd|\$|\.\/|[A-Za-z]:[\\/])|&&|\$\(|\|\s*\w""")
+
+
+def _nome_tarefa(texto) -> str:
+    """Nome amigável de uma tarefa em segundo plano: se o 'nome' for o próprio comando, não mostra o comando."""
+    texto = str(texto or "").strip()
+    if _PARECE_COMANDO.search(texto.split("\n", 1)[0]):
+        return "comando em segundo plano"
+    return _uma_linha(texto)
 
 
 def _uma_linha(texto, limite: int = 140) -> str:
