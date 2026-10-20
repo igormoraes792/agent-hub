@@ -22,6 +22,25 @@ const md = (text) => {
   try { return DOMPurify.sanitize(marked.parse(text || "", { breaks: true, gfm: true })); }
   catch { return `<p>${esc(text)}</p>`; }
 };
+/* Links nas respostas abrem em nova aba (nunca substituem o Agent Hub); links internos (#/…) continuam na mesma aba. */
+try {
+  DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+    if (node.tagName !== "A") return;
+    const href = node.getAttribute("href") || "";
+    if (!href || href.startsWith("#")) return;
+    node.setAttribute("target", "_blank");
+    node.setAttribute("rel", "noopener noreferrer");
+  });
+} catch { /* sem DOMPurify: o md() já cai no texto puro */ }
+/* Rede de segurança: qualquer link de conteúdo (respostas, aprovações, saudação) que não seja interno abre em nova aba. */
+document.addEventListener("click", (e) => {
+  const a = e.target.closest?.("a[href]");
+  if (!a || !a.closest(".md, .bubble, .approval")) return;
+  const href = a.getAttribute("href") || "";
+  if (href.startsWith("#") || a.target === "_blank") return;
+  e.preventDefault();
+  window.open(a.href, "_blank", "noopener");
+});
 function h(tag, attrs = {}, html = "") {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {

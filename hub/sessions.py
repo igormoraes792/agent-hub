@@ -171,14 +171,20 @@ class ClaudeSession(Session):
         if extra:
             system_prompt["append"] = extra
 
+        # Chat de agente: só os subagentes marcados nele. Chat livre: todos os agentes Claude do Agent Hub.
+        if agent:
+            ids_subagentes = agent.get("subagents") or []
+        else:
+            ids_subagentes = [a["id"] for a in store.agents.all() if a.get("provider") == "claude"]
         subagents = {}
-        for sub_id in (agent or {}).get("subagents") or []:
+        for sub_id in ids_subagentes:
             sub = store.agents.get(sub_id)
             if sub and sub.get("provider") == "claude":
                 subagents[_slug(sub["name"])] = AgentDefinition(
                     description=sub.get("description") or sub["name"],
-                    prompt=IDIOMA + "\n\n" + (sub.get("prompt") or ""),
-                    tools=sub.get("tools") or None,
+                    prompt="\n\n".join(p for p in (IDIOMA, _pasta_do_agente(sub), sub.get("prompt") or "") if p),
+                    tools=_ferramentas(sub.get("tools")),
+                    disallowedTools=sub.get("disallowed_tools") or None,
                     model=None if sub.get("model") in (None, "", "default") else sub["model"],
                 )
 
@@ -195,7 +201,7 @@ class ClaudeSession(Session):
             fork_session=bool(chat.get("fork_pending") and chat.get("session_id")),
             can_use_tool=self._can_use_tool,
             include_partial_messages=True,
-            tools=(agent or {}).get("tools") or None,
+            tools=_ferramentas((agent or {}).get("tools")),
             disallowed_tools=(agent or {}).get("disallowed_tools") or [],
             agents=subagents or None,
             stderr=self.stderr_tail.append,
@@ -455,6 +461,27 @@ IDIOMA = ("Idioma: escreva SEMPRE em português do Brasil, em tudo o que aparece
           "interno (thinking), planos e listas de tarefas, a descrição curta de cada comando/ferramenta (campo "
           "description), nomes de tarefas e subagentes e mensagens intermediárias. Mantenha em inglês apenas código, "
           "comandos, nomes de arquivos/colunas e termos técnicos sem tradução.")
+
+
+def _ferramentas(lista) -> list[str] | None:
+    """No Windows o terminal do Claude Code pode aparecer como 'Bash' ou como 'PowerShell', conforme a sessão.
+    Quem tem acesso a um recebe os dois, para nunca ficar sem terminal."""
+    if not lista:
+        return None
+    ferramentas = list(lista)
+    if any(t in ferramentas for t in ("Bash", "PowerShell")):
+        ferramentas += [t for t in ("Bash", "PowerShell") if t not in ferramentas]
+    return ferramentas
+
+
+def _pasta_do_agente(agent: dict) -> str:
+    """Como subagente ele roda na pasta do chat que o chamou; por isso recebe o caminho completo da própria pasta."""
+    cwd = agent.get("cwd")
+    if not cwd:
+        return ""
+    return (f'Sua pasta de trabalho é "{cwd}": seus manuais, ferramentas e modelos ficam nela. Leia arquivos pelo '
+            f'caminho completo (ex.: "{cwd}\\CONHECIMENTO.md") e rode scripts a partir dela (cd "{cwd}" antes do comando), '
+            f"porque a conversa que chamou você pode estar em outra pasta.")
 
 
 def extra_instructions(chat: dict, agent: dict | None) -> str:
