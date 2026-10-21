@@ -232,6 +232,18 @@ label > .input, label > select, label > textarea, label > .row { margin-top: 4px
 .att-x:hover { background: var(--danger); }
 .bubble-imgs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
 .bubble-imgs img { display: block; max-width: 240px; max-height: 180px; border-radius: 8px; cursor: zoom-in; border: 1px solid var(--border); }
+/* Documentos (Excel, CSV, PDF…): cartão com ícone, nome e tamanho */
+.att.att-doc { width: auto; max-width: 240px; display: flex; align-items: center; gap: 8px; padding: 0 30px 0 10px; }
+.doc-ico { font-size: 22px; line-height: 1; flex-shrink: 0; }
+.doc-info { display: flex; flex-direction: column; min-width: 0; font-size: 12.5px; }
+.doc-info b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.doc-info small { color: var(--muted); font-size: 11px; }
+.bubble-docs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.bubble-doc { display: inline-flex; align-items: center; gap: 6px; max-width: 280px; padding: 6px 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--panel); color: var(--text); text-decoration: none; font-size: 13px; }
+.bubble-doc span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bubble-doc:hover { border-color: var(--accent); }
+.bubble-doc .doc-ico { font-size: 16px; }
 .soltar-aqui { outline: 2px dashed var(--accent); outline-offset: -8px; border-radius: 12px; }
 
 /* Blocos de código com botão Copiar */

@@ -131,15 +131,24 @@ class Session:
         bus.publish({"type": "tasks", "chat_id": self.chat_id, "tasks": self.background_tasks()})
 
     # --- interface pública --------------------------------------------------------------------
-    async def send(self, text: str, images: list[dict] | None = None) -> None: ...
+    async def send(self, text: str, images: list[dict] | None = None, files: list[dict] | None = None,
+                   files_note: str = "") -> None: ...
     async def interrupt(self) -> None: ...
 
-    def emit_user(self, text: str, images: list[dict] | None) -> None:
-        """Mensagem do usuário no histórico (com as imagens anexadas, se houver)."""
+    def emit_user(self, text: str, images: list[dict] | None, files: list[dict] | None = None) -> None:
+        """Mensagem do usuário no histórico (com imagens e arquivos anexados, se houver)."""
         event: dict[str, Any] = {"kind": "user", "text": text}
         if images:
             event["images"] = [{"file": i["file"], "name": i.get("name") or i["file"]} for i in images]
+        if files:
+            event["files"] = [{"file": f["file"], "name": f["name"], "kind": f.get("kind", "")} for f in files]
         self.emit(event)
+
+    @staticmethod
+    def texto_para_ia(text: str, files: list[dict] | None, files_note: str) -> str:
+        """O que a IA recebe: a mensagem + onde estão os arquivos anexados (isso não aparece no balão)."""
+        base = text or ("Analise o(s) arquivo(s) anexado(s)." if files else "Analise a imagem.")
+        return f"{base}\n\n{files_note}" if files_note else base
     async def apply_settings(self) -> None: ...
     async def close(self) -> None: ...
 
@@ -204,8 +213,14 @@ class ClaudeSession(Session):
             tools=_ferramentas((agent or {}).get("tools")),
             disallowed_tools=(agent or {}).get("disallowed_tools") or [],
             agents=subagents or None,
+            add_dirs=[self._pasta_anexos()],  # arquivos anexados pelo usuário: leitura sem pedir permissão
             stderr=self.stderr_tail.append,
         )
+
+    def _pasta_anexos(self) -> str:
+        pasta = store.anexos_dir(self.chat_id)
+        pasta.mkdir(parents=True, exist_ok=True)
+        return str(pasta)
 
     async def _ensure_connected(self) -> None:
         cwd = self.chat.get("cwd")
@@ -373,13 +388,15 @@ class ClaudeSession(Session):
                 self.emit({"kind": "system", "level": "warn",
                            "text": f"Limite de uso ({info.rate_limit_type}): {info.status}"})
 
-    async def send(self, text: str, images: list[dict] | None = None) -> None:
-        self.emit_user(text, images)
+    async def send(self, text: str, images: list[dict] | None = None, files: list[dict] | None = None,
+                   files_note: str = "") -> None:
+        self.emit_user(text, images, files)
         self.set_status("running")
+        texto = self.texto_para_ia(text, files, files_note)
         try:
             await self._ensure_connected()
             if not images:
-                await self.client.query(text)
+                await self.client.query(texto)
                 return
             # Imagens vão como blocos da própria mensagem (base64), antes do texto.
             import base64
@@ -388,7 +405,7 @@ class ClaudeSession(Session):
                                              "data": base64.b64encode(Path(i["path"]).read_bytes()).decode("ascii")}}
                 for i in images
             ]
-            content.append({"type": "text", "text": text or "Analise a imagem."})
+            content.append({"type": "text", "text": texto})
 
             async def mensagem():
                 yield {"type": "user", "message": {"role": "user", "content": content}, "parent_tool_use_id": None}
@@ -704,11 +721,12 @@ class CodexSession(Session):
         self.emit({"kind": "system", "text": f"Codex conectado · modelo {res.get('model')} · sandbox "
                                              f"{_sandbox_label(res.get('sandbox'))} · aprovação {res.get('approvalPolicy')}"})
 
-    async def send(self, text: str, images: list[dict] | None = None) -> None:
-        self.emit_user(text, images)
+    async def send(self, text: str, images: list[dict] | None = None, files: list[dict] | None = None,
+                   files_note: str = "") -> None:
+        self.emit_user(text, images, files)
         try:
             await self._ensure_thread()
-            items = [{"type": "text", "text": text or "Analise a imagem."}]
+            items = [{"type": "text", "text": self.texto_para_ia(text, files, files_note)}]
             items += [{"type": "localImage", "path": i["path"]} for i in images or []]
             if self.turn_id and self.status != "idle":
                 await codex_server.request("turn/steer", {"threadId": self.thread_id, "expectedTurnId": self.turn_id,

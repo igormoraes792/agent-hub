@@ -1,6 +1,7 @@
 @echo off
 rem Inicia o Agent Hub e abre o navegador. Feche esta janela (ou Ctrl+C) para parar.
 cd /d "%~dp0"
+title Agent Hub
 if not exist ".venv\Scripts\python.exe" (
   echo Criando ambiente Python...
   python -m venv .venv || goto :erro

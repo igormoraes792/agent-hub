@@ -4,7 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Agent Hub</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23d97757'/><path d='M9 22l7-12 7 12' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/icone-32.png">
+  <link rel="icon" type="image/png" sizes="256x256" href="/static/icone-256.png">
   <link rel="stylesheet" href="/static/style.css">
   <script src="/static/vendor/marked.min.js"></script>
   <script src="/static/vendor/purify.min.js"></script>
@@ -53,15 +54,15 @@
           <div id="tray" class="attach-tray hidden"></div>
           <textarea id="input" rows="1" placeholder="Responder…"></textarea>
           <div class="composer-row">
-            <button id="btn-attach" class="cbtn" type="button" title="Anexar imagem (ou cole com Ctrl+V, ou arraste para a conversa)"><svg viewBox="0 0 20 20" width="18" height="18"><path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+            <button id="btn-attach" class="cbtn" type="button" title="Anexar imagem ou arquivo: Excel, CSV, PDF, Word, texto (ou cole com Ctrl+V / arraste para a conversa)"><svg viewBox="0 0 20 20" width="18" height="18"><path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
             <div class="grow"></div>
             <span id="composer-info" class="model-pill"></span>
             <button id="btn-stop" class="send-btn stop hidden" type="button" title="Parar"><svg viewBox="0 0 20 20" width="14" height="14"><rect x="4" y="4" width="12" height="12" rx="2" fill="currentColor"/></svg></button>
             <button id="btn-send" class="send-btn" type="button" title="Enviar (Enter)"><svg viewBox="0 0 20 20" width="16" height="16"><path d="M10 16V4M4.5 9.5 10 4l5.5 5.5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
           </div>
         </div>
-        <input type="file" id="file-input" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
-        <div class="composer-hint">Enter envia · Shift+Enter quebra linha · / comandos · Ctrl+V cola imagem</div>
+        <input type="file" id="file-input" accept="image/png,image/jpeg,image/gif,image/webp,.xlsx,.xlsm,.xls,.csv,.pdf,.docx,.txt,.json,.md" multiple hidden>
+        <div class="composer-hint">Enter envia · Shift+Enter quebra linha · / comandos · Ctrl+V cola imagem ou arquivo</div>
       </footer>
     </section>
 
@@ -80,14 +81,14 @@
           <div id="start-tray" class="attach-tray hidden"></div>
           <textarea id="start-input" rows="1" placeholder="Como posso ajudar hoje?"></textarea>
           <div class="composer-row">
-            <button id="btn-start-attach" class="cbtn" type="button" title="Anexar imagem (ou cole com Ctrl+V, ou arraste para a tela)"><svg viewBox="0 0 20 20" width="18" height="18"><path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+            <button id="btn-start-attach" class="cbtn" type="button" title="Anexar imagem ou arquivo: Excel, CSV, PDF, Word, texto (ou cole com Ctrl+V / arraste para a tela)"><svg viewBox="0 0 20 20" width="18" height="18"><path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
             <div class="grow"></div>
             <span id="start-info" class="model-pill"></span>
             <button id="start-send" class="send-btn" type="button" title="Enviar e criar o chat (Enter)"><svg viewBox="0 0 20 20" width="16" height="16"><path d="M10 16V4M4.5 9.5 10 4l5.5 5.5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
           </div>
         </div>
-        <input type="file" id="start-file-input" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
-        <div class="composer-hint">O chat é criado quando você enviar · Ctrl+V cola imagem</div>
+        <input type="file" id="start-file-input" accept="image/png,image/jpeg,image/gif,image/webp,.xlsx,.xlsm,.xls,.csv,.pdf,.docx,.txt,.json,.md" multiple hidden>
+        <div class="composer-hint">O chat é criado quando você enviar · Ctrl+V cola imagem ou arquivo</div>
       </footer>
       <div id="start-opts" class="start-opts"></div>
     </section>

@@ -472,11 +472,14 @@ function renderEvent(ev, wrap) {
     case "user": {
       finishActivity();
       const imgs = (ev.images || []).map((i) => {
-        const url = `/api/chats/${encodeURIComponent(S.chatId)}/anexos/${encodeURIComponent(i.file)}`;
+        const url = anexoUrl(i.file);
         return `<a href="${url}" target="_blank" rel="noopener" title="${esc(i.name)}"><img src="${url}" alt="${esc(i.name)}" loading="lazy"></a>`;
       }).join("");
+      const docs = (ev.files || []).map((d) =>
+        `<a class="bubble-doc" href="${anexoUrl(d.file)}" target="_blank" rel="noopener" title="Baixar ${esc(d.name)}">
+           <span class="doc-ico">${EXT_DOCUMENTOS[extensao(d.name)] || "📄"}</span><span>${esc(d.name)}</span></a>`).join("");
       wrap.append(h("div", { class: "msg user" },
-        `<div class="bubble">${imgs ? `<div class="bubble-imgs">${imgs}</div>` : ""}${ev.text ? `<div>${esc(ev.text)}</div>` : ""}</div>`));
+        `<div class="bubble">${imgs ? `<div class="bubble-imgs">${imgs}</div>` : ""}${docs ? `<div class="bubble-docs">${docs}</div>` : ""}${ev.text ? `<div>${esc(ev.text)}</div>` : ""}</div>`));
       break;
     }
     case "assistant": {
@@ -726,17 +729,33 @@ async function prepararImagem(file) {
   }
   return { name: file.name || "imagem colada", media_type: tipo, data: dataUrl.split(",")[1], preview: dataUrl };
 }
+/* Documentos aceitos (vão para o disco; a IA recebe o caminho e, no Excel, cada aba em CSV). */
+const EXT_DOCUMENTOS = { xlsx: "📊", xlsm: "📊", xls: "📊", csv: "📊", pdf: "📕", docx: "📝", txt: "📄", json: "📄", md: "📄" };
+const extensao = (nome) => (String(nome || "").match(/\.([a-z0-9]+)$/i) || [])[1]?.toLowerCase() || "";
+const ehDocumento = (f) => !!EXT_DOCUMENTOS[extensao(f?.name)];
+const ehImagem = (f) => !!f?.type && TIPOS_IMAGEM.test(f.type);
+
+async function prepararDocumento(file) {
+  if (file.size > 30 * 1024 * 1024) throw new Error(`"${file.name}" é grande demais (máximo 30 MB).`);
+  const dataUrl = await lerComoDataURL(file);
+  return { name: file.name, media_type: file.type || "", data: dataUrl.split(",")[1] || "", doc: true, ext: extensao(file.name), size: file.size };
+}
+
 async function adicionarAnexos(onde, arquivos) {
-  const imagens = [...arquivos].filter((f) => f && f.type && f.type.startsWith("image/"));
-  if (!imagens.length) return false;
-  for (const f of imagens) {
-    if (S.anexos[onde].length >= 10) { toast("No máximo 10 imagens por mensagem."); break; }
-    try { S.anexos[onde].push(await prepararImagem(f)); }
+  const lista = [...arquivos].filter(Boolean);
+  const validos = lista.filter((f) => ehImagem(f) || ehDocumento(f));
+  const recusados = lista.filter((f) => !ehImagem(f) && !ehDocumento(f));
+  if (recusados.length) toast(`Tipo não suportado: ${recusados.map((f) => f.name).join(", ")}. Use imagens, Excel, CSV, PDF, Word, TXT, JSON ou MD.`, 6000);
+  if (!validos.length) return false;
+  for (const f of validos) {
+    if (S.anexos[onde].length >= 10) { toast("No máximo 10 arquivos por mensagem."); break; }
+    try { S.anexos[onde].push(ehImagem(f) ? await prepararImagem(f) : await prepararDocumento(f)); }
     catch (e) { toast(e.message); }
   }
   renderTray(onde);
   return true;
 }
+const tamanhoLegivel = (b) => (b >= 1024 * 1024 ? `${(b / 1024 / 1024).toFixed(1).replace(".", ",")} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
 function renderTray(onde) {
   const tray = $(onde === "chat" ? "#tray" : "#start-tray");
   const lista = S.anexos[onde];
@@ -744,7 +763,10 @@ function renderTray(onde) {
   atualizarBotaoEnviar(onde);
   tray.innerHTML = "";
   lista.forEach((a, i) => {
-    const item = h("div", { class: "att", title: a.name }, `<img src="${a.preview}" alt="${esc(a.name)}">`);
+    const item = a.doc
+      ? h("div", { class: "att att-doc", title: a.name },
+          `<span class="doc-ico">${EXT_DOCUMENTOS[a.ext] || "📄"}</span><span class="doc-info"><b>${esc(a.name)}</b><small>${esc(a.ext.toUpperCase())} · ${tamanhoLegivel(a.size)}</small></span>`)
+      : h("div", { class: "att", title: a.name }, `<img src="${a.preview}" alt="${esc(a.name)}">`);
     item.append(h("button", { type: "button", class: "att-x", title: "Remover", onclick: () => { lista.splice(i, 1); renderTray(onde); } }, "✕"));
     tray.append(item);
   });
@@ -752,11 +774,12 @@ function renderTray(onde) {
 function anexosParaEnvio(onde) {
   return S.anexos[onde].map(({ name, media_type, data }) => ({ name, media_type, data }));
 }
+function anexoUrl(file) { return `/api/chats/${encodeURIComponent(S.chatId)}/anexos/${encodeURIComponent(file)}`; }
 /* Liga colar (Ctrl+V), arrastar e o botão 📎 a uma caixa de mensagem. */
 function ligarAnexos(onde, textarea, botao, campoArquivo, areaSoltar) {
   textarea.addEventListener("paste", async (e) => {
     const arquivos = [...(e.clipboardData?.items || [])].filter((i) => i.kind === "file").map((i) => i.getAsFile());
-    if (arquivos.some((f) => f && f.type.startsWith("image/"))) {
+    if (arquivos.some((f) => f && (ehImagem(f) || ehDocumento(f)))) {
       e.preventDefault();
       await adicionarAnexos(onde, arquivos);
     }
@@ -847,7 +870,7 @@ function openStart(agentId = null, provider = null) {
   const agent = S.agents.find((a) => a.id === agentId);
   if (agentId && !agent) { toast("Agente não encontrado."); location.hash = "#/"; return; }
   S.chatId = null;
-  S.start = { agentId: agent?.id || null, provider: agent?.provider || provider || localStorageGet("lastProvider") || "claude" };
+  S.start = { agentId: agent?.id || null, provider: agent?.provider || provider || "claude" };
   show("start");
   renderStart();
   $("#start-input").focus();
@@ -889,7 +912,7 @@ function renderStart() {
         </div>
         <details class="opts"><summary>Modelo, permissões e pasta</summary>
           ${provider === "codex" && !S.meta.codex.available ? `<div class="err-box">codex.exe não encontrado. Instale a extensão do Codex no VS Code ou defina CODEX_PATH.</div>` : ""}
-          <div class="grid2">${providerFieldsHtml("ds", provider, {})}</div>
+          <div class="grid2">${providerFieldsHtml("ds", provider, provider === "claude" ? PADRAO_CHAT_CLAUDE : {})}</div>
           <label>Pasta de trabalho ${folderFieldHtml("ds-cwd", cwd)}</label>
           <div class="hint">A pasta não pode ser trocada depois da primeira mensagem. Dica: para instruções e configurações salvas, escolha um agente na barra lateral.</div>
         </details>
@@ -912,6 +935,9 @@ function saudacao() {
   return h < 5 ? "Boa noite" : h < 12 ? "Bom dia" : h < 18 ? "Boa tarde" : "Boa noite";
 }
 
+/* Chat livre novo no Claude começa no Opus com raciocínio alto (dá para trocar em "Modelo, permissões e pasta"). */
+const PADRAO_CHAT_CLAUDE = { model: "opus", effort: "high" };
+
 /* Etiqueta do modelo dentro da caixa de mensagem da tela de início. */
 function atualizarInfoStart() {
   if (!S.start) return;
@@ -919,7 +945,8 @@ function atualizarInfoStart() {
   const provider = S.start.provider;
   const valor = agent ? (agent.model ?? "") : ($("#ds-model")?.value ?? "");
   const nome = modelOptions(provider).find((m) => String(m.value) === String(valor))?.label || valor || "padrão";
-  $("#start-info").textContent = `${provider === "claude" ? "Claude" : "Codex"} · ${nome}`;
+  const esforco = agent ? agent.effort : $("#ds-effort")?.value;
+  $("#start-info").textContent = `${provider === "claude" ? "Claude" : "Codex"} · ${nome}${esforco ? ` · ${EFFORT_LABEL[esforco] || esforco}` : ""}`;
 }
 
 async function startSend() {

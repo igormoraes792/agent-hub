@@ -4,3 +4,5 @@ __pycache__/
 *.pyc
 # agentes: permissões locais do Claude Code
 agentes/*/.claude/
+# atalho com caminhos desta máquina
+*.lnk

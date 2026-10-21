@@ -282,33 +282,104 @@ async def chat_events(chat_id: str):
 
 
 TIPOS_IMAGEM = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp"}
+# Documentos: salvos no disco; a IA recebe o caminho (e, no Excel, cada aba convertida em CSV).
+EXT_DOCUMENTOS = {"xlsx": "Excel", "xlsm": "Excel", "xls": "Excel (formato antigo)", "csv": "CSV", "pdf": "PDF",
+                  "docx": "Word", "txt": "texto", "json": "JSON", "md": "Markdown"}
 MAX_IMAGEM_BYTES = 10 * 1024 * 1024
-MAX_IMAGENS = 10
+MAX_DOCUMENTO_BYTES = 30 * 1024 * 1024
+MAX_ANEXOS = 10
 
 
-def _salvar_anexos(chat_id: str, anexos: list) -> list[dict]:
-    """Grava as imagens enviadas (base64) em data/anexos/<chat>/ e devolve os metadados."""
+def _salvar_anexos(chat_id: str, anexos: list) -> tuple[list[dict], list[dict]]:
+    """Grava os anexos (base64) em data/anexos/<chat>/. Devolve (imagens, documentos)."""
     import base64
     import uuid
-    if len(anexos) > MAX_IMAGENS:
-        raise HTTPException(400, f"No máximo {MAX_IMAGENS} imagens por mensagem.")
-    salvos = []
+    if len(anexos) > MAX_ANEXOS:
+        raise HTTPException(400, f"No máximo {MAX_ANEXOS} arquivos por mensagem.")
+    imagens, documentos = [], []
     pasta = store.anexos_dir(chat_id)
     for a in anexos:
         tipo = (a.get("media_type") or "").lower()
-        if tipo not in TIPOS_IMAGEM:
-            raise HTTPException(400, f"Tipo de arquivo não suportado: {tipo or 'desconhecido'} (use PNG, JPG, GIF ou WEBP).")
+        nome_original = (a.get("name") or "arquivo")[:120]
+        ext = nome_original.rsplit(".", 1)[-1].lower() if "." in nome_original else ""
+        if tipo in TIPOS_IMAGEM:
+            ext_salva, limite = TIPOS_IMAGEM[tipo], MAX_IMAGEM_BYTES
+        elif ext in EXT_DOCUMENTOS:
+            ext_salva, limite = ext, MAX_DOCUMENTO_BYTES
+        else:
+            raise HTTPException(400, f'"{nome_original}": tipo não suportado. Use imagens (PNG, JPG, GIF, WEBP) ou '
+                                     f"{', '.join(sorted(e.upper() for e in EXT_DOCUMENTOS))}.")
         try:
             dados = base64.b64decode(a.get("data") or "", validate=True)
         except ValueError:
-            raise HTTPException(400, "Imagem inválida.") from None
-        if not dados or len(dados) > MAX_IMAGEM_BYTES:
-            raise HTTPException(400, "Imagem vazia ou maior que 10 MB.")
+            raise HTTPException(400, f'"{nome_original}" está corrompido.') from None
+        if not dados or len(dados) > limite:
+            raise HTTPException(400, f'"{nome_original}" está vazio ou é maior que {limite // (1024 * 1024)} MB.')
         pasta.mkdir(parents=True, exist_ok=True)
-        nome = f"{uuid.uuid4().hex[:12]}.{TIPOS_IMAGEM[tipo]}"
+        nome = f"{uuid.uuid4().hex[:12]}.{ext_salva}"
         (pasta / nome).write_bytes(dados)
-        salvos.append({"file": nome, "name": (a.get("name") or nome)[:120], "media_type": tipo, "path": str(pasta / nome)})
-    return salvos
+        item = {"file": nome, "name": nome_original, "media_type": tipo, "path": str(pasta / nome)}
+        if tipo in TIPOS_IMAGEM:
+            imagens.append(item)
+        else:
+            item["kind"] = EXT_DOCUMENTOS[ext]
+            item["size"] = len(dados)
+            if ext in ("xlsx", "xlsm"):
+                item["sheets"] = _excel_para_csv(pasta / nome)
+            documentos.append(item)
+    return imagens, documentos
+
+
+def _excel_para_csv(arquivo: Path) -> list[dict]:
+    """Converte cada aba do Excel em CSV (ao lado do arquivo) para a IA ler rápido e sem depender do Excel."""
+    import csv
+    import datetime
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(arquivo, read_only=True, data_only=True)
+    except Exception as e:  # noqa: BLE001 - a IA ainda recebe o arquivo original
+        return [{"erro": f"não consegui ler as abas ({type(e).__name__})"}]
+    abas = []
+    for i, ws in enumerate(wb.worksheets):
+        destino = arquivo.with_name(f"{arquivo.stem}_aba{i + 1}.csv")
+        linhas, cabecalho, colunas = 0, [], 0
+        with open(destino, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.writer(f, delimiter=";")
+            for row in ws.iter_rows(values_only=True):
+                if row is None or all(v is None for v in row):
+                    continue
+                valores = ["" if v is None else (v.isoformat() if isinstance(v, (datetime.date, datetime.datetime)) else v)
+                           for v in row]
+                if not cabecalho:
+                    cabecalho = [str(v) for v in valores]
+                w.writerow(valores)
+                linhas += 1
+                colunas = max(colunas, len(valores))
+        abas.append({"nome": ws.title, "csv": str(destino), "linhas": linhas, "colunas": colunas,
+                     "cabecalho": [c for c in cabecalho if c][:30]})
+    wb.close()
+    return abas
+
+
+def _bloco_documentos(documentos: list[dict]) -> str:
+    """Texto que vai junto da mensagem para a IA (não aparece no balão): onde estão os arquivos e o que têm."""
+    if not documentos:
+        return ""
+    linhas = ["[Arquivos anexados pelo usuário nesta mensagem. Estão salvos neste computador (caminhos locais, não são "
+              "links): leia-os com as ferramentas locais (leitura de arquivo ou terminal, ex.: Python/PowerShell), "
+              "nunca com busca na web.]"]
+    for d in documentos:
+        tamanho = f'{d["size"] / 1024:,.0f}'.replace(",", ".")
+        linhas.append(f'- "{d["name"]}" ({d["kind"]}, {tamanho} KB): {d["path"]}')
+        for aba in d.get("sheets") or []:
+            if "erro" in aba:
+                linhas.append(f"  - {aba['erro']}; use o arquivo original.")
+                continue
+            linhas.append(f'  - aba "{aba["nome"]}": {aba["linhas"]} linhas (1ª = cabeçalho) × {aba["colunas"]} colunas '
+                          f"→ CSV (separador ;): {aba['csv']}")
+            if aba["cabecalho"]:
+                linhas.append(f"    colunas: {', '.join(aba['cabecalho'])}")
+    return "\n".join(linhas)
 
 
 @app.post("/api/chats/{chat_id}/send")
@@ -317,28 +388,36 @@ async def chat_send(chat_id: str, body: dict):
     chat = store.chats.get(chat_id)
     if not chat:
         raise HTTPException(404)
-    images = _salvar_anexos(chat_id, body.get("attachments") or [])
-    if not text and not images:
+    # Em thread: converter um Excel grande para CSV leva alguns segundos e não pode travar o servidor.
+    images, documentos = await asyncio.to_thread(_salvar_anexos, chat_id, body.get("attachments") or [])
+    if not text and not images and not documentos:
         raise HTTPException(400, "mensagem vazia")
     if chat.get("auto_title"):
-        title = re.sub(r"\s+", " ", text)[:60] or "Análise de imagem"
+        padrao = f"Análise de {documentos[0]['name']}" if documentos else "Análise de imagem"
+        title = re.sub(r"\s+", " ", text)[:60] or padrao[:60]
         chat = store.chats.update(chat_id, {"title": title, "auto_title": False})
     else:
         chat = store.chats.update(chat_id, {})  # atualiza updated_at para subir na lista
     bus.publish({"type": "chat_updated", "chat": _chat_out(chat)})
     session = manager.get(chat_id)
-    asyncio.create_task(session.send(text, images))
+    asyncio.create_task(session.send(text, images, documentos, _bloco_documentos(documentos)))
     return {"ok": True}
 
 
 @app.get("/api/chats/{chat_id}/anexos/{nome}")
 async def chat_anexo(chat_id: str, nome: str):
-    if not re.fullmatch(r"[a-f0-9]{12}\.(png|jpg|gif|webp)", nome) or not re.fullmatch(r"\w+", chat_id):
+    if not re.fullmatch(r"[a-f0-9]{12}\.(png|jpg|gif|webp|xlsx|xlsm|xls|csv|pdf|docx|txt|json|md)", nome) \
+            or not re.fullmatch(r"\w+", chat_id):
         raise HTTPException(404)
     arquivo = store.anexos_dir(chat_id) / nome
     if not arquivo.is_file():
         raise HTTPException(404)
-    return FileResponse(arquivo)
+    if nome.rsplit(".", 1)[-1] in ("png", "jpg", "gif", "webp"):
+        return FileResponse(arquivo)
+    # Documentos: baixa com o nome original (guardado no histórico do chat)
+    original = next((d.get("name") for e in store.read_events(chat_id) for d in (e.get("files") or [])
+                     if d.get("file") == nome), nome)
+    return FileResponse(arquivo, filename=original)
 
 
 @app.post("/api/chats/{chat_id}/interrupt")
@@ -453,12 +532,27 @@ async def websocket(ws: WebSocket):
         bus.unsubscribe(queue)
 
 
+def abrir_janela(url: str, aba: bool = False) -> None:
+    """Abre o hub numa janela própria do Edge/Chrome (modo app): sem barra de endereço e com o ícone
+    do Agent Hub na barra de tarefas. Sem Edge/Chrome (ou com --aba), abre no navegador padrão."""
+    if not aba:
+        import subprocess
+        candidatos = [Path(os.environ.get(v, "")) / sub for v in ("ProgramFiles(x86)", "ProgramFiles", "LOCALAPPDATA")
+                      for sub in (r"Microsoft\Edge\Application\msedge.exe", r"Google\Chrome\Application\chrome.exe")]
+        for exe in candidatos:
+            if exe.is_file():
+                subprocess.Popen([str(exe), f"--app={url}", "--window-size=1360,900"])
+                return
+    webbrowser.open(url)
+
+
 def main() -> None:
     import uvicorn
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=PORT)
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--aba", action="store_true", help="abrir numa aba do navegador padrão em vez de janela própria")
     args = parser.parse_args()
     if args.port != PORT:
         os.environ["AGENT_HUB_PORT"] = str(args.port)
@@ -467,7 +561,7 @@ def main() -> None:
     url = f"http://127.0.0.1:{args.port}"
     if not args.no_browser:
         import threading
-        threading.Timer(1.5, lambda: webbrowser.open(url)).start()
+        threading.Timer(1.5, lambda: abrir_janela(url, args.aba)).start()
     print(f"Agent Hub rodando em {url}  (Ctrl+C para parar)")
     uvicorn.run(app, host="127.0.0.1", port=args.port, loop="asyncio", log_level="warning")
 

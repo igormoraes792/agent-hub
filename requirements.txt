@@ -1,3 +1,4 @@
 claude-agent-sdk>=0.2.167
 fastapi>=0.143
 uvicorn[standard]>=0.54
+openpyxl>=3.1
