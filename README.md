@@ -9,15 +9,15 @@ Central local de chats com **Claude** e **Codex**: várias conversas em paralelo
 3. **Claude:** instale a extensão Claude Code no VS Code e faça login nela uma vez (o Agent Hub usa esse login).
 4. **Codex (opcional):** instale a extensão Codex/ChatGPT no VS Code e faça login.
 5. **MCPs (Power BI, Superset…):** as configurações não vão no repositório, porque ficam em `~/.claude.json` e `~/.codex/config.toml` de cada máquina, assim como credenciais (ex.: `superset-mcp\credentials.xml`). Configure de novo na máquina nova e depois confira em **Ambiente → Servidores MCP**.
-6. Dê dois cliques em `Iniciar.bat`. Na primeira vez ele cria o ambiente Python e instala as dependências.
+6. Dê dois cliques em `Iniciar.bat`. Na primeira vez ele cria o ambiente Python, instala as dependências e cria o atalho **Agent Hub**.
 
 Chats e agentes ficam na pasta `data/`, que **não vai para o GitHub**. Para levar seus agentes, copie `data/agents.json` para a pasta `data/` da outra máquina.
 
 ## Como abrir
 
-Dê dois cliques em `Iniciar.bat`. O navegador abre em http://127.0.0.1:8787. Para parar, feche a janela preta.
+Dê dois cliques no atalho **Agent Hub** (pode fixá-lo na barra de tarefas ou copiá-lo para a Área de Trabalho). Ele abre o hub numa janela própria, com o ícone do Agent Hub, e liga o servidor escondido por trás. Ao fechar a última janela, o servidor se desliga sozinho; se algum chat ainda estiver trabalhando, ele termina antes. Se o atalho não abrir, o motivo fica em `data/servidor.log`.
 
-Opções: `Iniciar.bat --port 9000` muda a porta e `Iniciar.bat --no-browser` não abre o navegador.
+Para ver as mensagens do servidor, use `Iniciar.bat` (modo console): ele abre em http://127.0.0.1:8787 e para quando a janela preta é fechada. Opções: `--port 9000` muda a porta, `--no-browser` não abre a janela e `--aba` abre numa aba do navegador padrão.
 
 ## O que dá para fazer
 

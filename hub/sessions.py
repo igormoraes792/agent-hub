@@ -15,7 +15,7 @@ from pathlib import Path
 from collections import deque
 from typing import Any
 
-from . import store
+from . import consumo, store
 from .providers import find_codex
 
 MAX_OUTPUT_CHARS = 20_000
@@ -148,7 +148,11 @@ class Session:
     def texto_para_ia(text: str, files: list[dict] | None, files_note: str) -> str:
         """O que a IA recebe: a mensagem + onde estão os arquivos anexados (isso não aparece no balão)."""
         base = text or ("Analise o(s) arquivo(s) anexado(s)." if files else "Analise a imagem.")
-        return f"{base}\n\n{files_note}" if files_note else base
+        if files_note:
+            base = f"{base}\n\n{files_note}"
+        if base.startswith("/"):  # comando (/compact, /skill…): não pode receber texto extra
+            return base
+        return f"{base}\n\n{agora_brasilia()}"
     async def apply_settings(self) -> None: ...
     async def close(self) -> None: ...
 
@@ -191,7 +195,7 @@ class ClaudeSession(Session):
             if sub and sub.get("provider") == "claude":
                 subagents[_slug(sub["name"])] = AgentDefinition(
                     description=sub.get("description") or sub["name"],
-                    prompt="\n\n".join(p for p in (IDIOMA, _pasta_do_agente(sub), sub.get("prompt") or "") if p),
+                    prompt="\n\n".join(p for p in (IDIOMA, FUSO, _pasta_do_agente(sub), sub.get("prompt") or "") if p),
                     tools=_ferramentas(sub.get("tools")),
                     disallowedTools=sub.get("disallowed_tools") or None,
                     model=None if sub.get("model") in (None, "", "default") else sub["model"],
@@ -384,9 +388,18 @@ class ClaudeSession(Session):
 
         if isinstance(msg, RateLimitEvent):
             info = msg.rate_limit_info
-            if info and info.status not in ("allowed", None):
-                self.emit({"kind": "system", "level": "warn",
-                           "text": f"Limite de uso ({info.rate_limit_type}): {info.status}"})
+            if info:
+                consumo.salvar_limite_claude(info.raw)  # aba Consumo
+            # Aviso no chat só quando muda (não a cada mensagem).
+            aviso = (info.rate_limit_type, info.status) if info and info.status not in ("allowed", None) else None
+            if aviso and aviso != getattr(self, "_ultimo_aviso_limite", None):
+                self._ultimo_aviso_limite = aviso
+                janela = {"five_hour": "da sessão (5 h)", "seven_day": "semanal", "seven_day_opus": "semanal do Opus",
+                          "seven_day_sonnet": "semanal do Sonnet"}.get(info.rate_limit_type, info.rate_limit_type or "")
+                uso = f"{round(100 * info.utilization)}% " if info.utilization is not None else ""
+                texto = (f"Limite {janela} atingido." if info.status == "rejected"
+                         else f"Atenção: você já usou {uso}do limite {janela}. Detalhes na aba Consumo.")
+                self.emit({"kind": "system", "level": "warn", "text": texto})
 
     async def send(self, text: str, images: list[dict] | None = None, files: list[dict] | None = None,
                    files_note: str = "") -> None:
@@ -474,6 +487,23 @@ def effective_chat(chat: dict) -> dict:
     return {**chat, **{k: agent[k] for k in AGENT_CONTROLLED if agent.get(k) not in (None, "")}}
 
 
+FUSO = ("Fuso horário: o usuário está em Brasília (UTC-3, America/Sao_Paulo, sem horário de verão). Mostre "
+        "SEMPRE os horários no horário de Brasília. Horários técnicos vindos de sistemas costumam estar em UTC: "
+        "colunas de auditoria/carga (dh_update_*, dh_insert_*, dt_carga, updated_at, created_at), changed_on/"
+        "created_on e logs do Superset, metadados e jobs do Dremio, horários de atualização (refresh) do Power BI, "
+        "logs e APIs em geral. Converta subtraindo 3 horas antes de citar (ex.: 14:20 UTC = 11:20 de Brasília) e, "
+        "quando ajudar, diga que converteu. Datas e horas de negócio (data de faturamento, emissão, captação do "
+        "pedido) já vêm no horário local: não converta. Se um horário ficar no futuro em relação ao horário atual "
+        "informado na mensagem, ele está em UTC. Se não der para saber o fuso de um horário, avise em vez de chutar.")
+
+
+def agora_brasilia() -> str:
+    """Nota de horário que vai junto de cada mensagem (não aparece no balão do chat)."""
+    from datetime import datetime, timedelta, timezone
+    agora = datetime.now(timezone(timedelta(hours=-3)))
+    return f"[Agora: {agora:%d/%m/%Y %H:%M}, horário de Brasília (UTC-3).]"
+
+
 IDIOMA = ("Idioma: escreva SEMPRE em português do Brasil, em tudo o que aparece para o usuário: respostas, raciocínio "
           "interno (thinking), planos e listas de tarefas, a descrição curta de cada comando/ferramenta (campo "
           "description), nomes de tarefas e subagentes e mensagens intermediárias. Mantenha em inglês apenas código, "
@@ -503,7 +533,7 @@ def _pasta_do_agente(agent: dict) -> str:
 
 def extra_instructions(chat: dict, agent: dict | None) -> str:
     """Idioma + instruções do agente + a saudação que o usuário viu antes de escrever."""
-    parts = [IDIOMA]
+    parts = [IDIOMA, FUSO]
     if agent and agent.get("prompt"):
         parts.append(agent["prompt"])
     if chat.get("greeting"):
@@ -574,6 +604,7 @@ class CodexServer:
         self.next_id = 0
         self.waiting: dict[int, asyncio.Future] = {}
         self.threads: dict[str, "CodexSession"] = {}
+        self.filhos: dict[str, "CodexSession"] = {}  # thread de subagente -> chat que o chamou
         self.lock = asyncio.Lock()
         self.stderr_tail: deque[str] = deque(maxlen=40)
 
@@ -657,7 +688,11 @@ class CodexServer:
                     fut.set_result(msg.get("result") or {})
             return
         params = msg.get("params") or {}
-        session = self.threads.get(params.get("threadId"))
+        tid = params.get("threadId")
+        session = self.threads.get(tid)
+        filho = None
+        if session is None and tid in self.filhos:  # subagente: tudo vai para o chat que o chamou
+            session, filho = self.filhos[tid], tid
         if "id" in msg:  # pedido do servidor (aprovação, pergunta…)
             if session:
                 asyncio.create_task(session.on_server_request(msg["id"], method, params))
@@ -666,6 +701,8 @@ class CodexServer:
             return
         if method == "windowsSandbox/setupCompleted":
             bus.publish({"type": "codex_sandbox", "result": params})
+        elif session and filho:
+            session.on_child_notification(filho, method, params)
         elif session:
             session.on_notification(method, params)
 
@@ -698,6 +735,9 @@ class CodexSession(Session):
         extra = extra_instructions(chat, agent)
         if extra:
             params["developerInstructions"] = extra
+        config = _config_codex(agent)
+        if config:
+            params["config"] = config
         return params
 
     async def _ensure_thread(self) -> None:
@@ -726,7 +766,13 @@ class CodexSession(Session):
         self.emit_user(text, images, files)
         try:
             await self._ensure_thread()
-            items = [{"type": "text", "text": self.texto_para_ia(text, files, files_note)}]
+            texto = self.texto_para_ia(text, files, files_note)
+            papeis = sorted({k.split(".")[1] for k in _config_codex(self.agent()) if k.startswith("agents.")})
+            if papeis and self.agent() and not texto.startswith("/"):
+                # O Codex só delega quando o usuário pede; no chat de agente com subagentes, o pedido vai junto.
+                texto += ("\n\n[Você tem autorização do usuário para delegar a subagentes com a ferramenta spawn_agent "
+                          f"(agent_type: {', '.join(papeis)}), como indicam as suas instruções.]")
+            items = [{"type": "text", "text": texto}]
             items += [{"type": "localImage", "path": i["path"]} for i in images or []]
             if self.turn_id and self.status != "idle":
                 await codex_server.request("turn/steer", {"threadId": self.thread_id, "expectedTurnId": self.turn_id,
@@ -773,6 +819,8 @@ class CodexSession(Session):
 
     async def close(self) -> None:
         self.deny_all_pending("Sessão encerrada.")
+        for filho in [f for f, s in codex_server.filhos.items() if s is self]:
+            codex_server.filhos.pop(filho, None)
         if self.thread_id:
             codex_server.threads.pop(self.thread_id, None)
             try:
@@ -840,15 +888,73 @@ class CodexSession(Session):
             self.emit({"kind": "system", "level": "warn", "text": msg})
 
     def _item_started(self, item: dict) -> None:
+        if self._subagente(item):
+            return
         tool = codex_tool_from_item(item)
         if tool:
             self.items[item["id"]] = item
             self.emit({"kind": "tool", "id": item["id"], **tool})
 
     def _item_completed(self, item: dict) -> None:
+        if self._subagente(item, concluido=True):
+            return
         started = self.items.pop(item.get("id"), None) is not None
         for event in codex_item_events(item, include_tool_start=not started):
             self.emit(event)
+
+    # --- subagentes (papéis do Codex chamados com spawn_agent) -----------------------------------
+    def _subagente(self, item: dict, concluido: bool = False) -> bool:
+        """Itens que controlam subagentes. Registra a thread do subagente (para os eventos e aprovações dele
+        virem para este chat) e mostra uma etapa "Delegando: <papel>". True = item já tratado."""
+        t = item.get("type")
+        if t == "collabAgentToolCall":
+            for filho in item.get("receiverThreadIds") or []:
+                codex_server.filhos[filho] = self
+            return item.get("tool") in ("wait", "wait_agent")  # "esperando o subagente": não vira etapa
+        if t != "subAgentActivity":
+            return False
+        filho = item.get("agentThreadId")
+        if filho:
+            codex_server.filhos[filho] = self
+        if not concluido:  # o mesmo item chega em started e completed: trata uma vez só
+            return True
+        papel = (item.get("agentPath") or "").rstrip("/").rsplit("/", 1)[-1] or "subagente"
+        tid = f"sub-{filho}"
+        tipo = item.get("kind")
+        if tipo == "started":
+            self.emit({"kind": "tool", "id": tid, "name": "Agent", "input": {"subagent_type": papel,
+                                                                             "description": papel}})
+        elif tipo == "completed":
+            self.emit({"kind": "tool_result", "id": tid, "is_error": False, "output": "Concluído."})
+        elif tipo in ("failed", "errored", "interrupted", "killed", "shutdown", "cancelled"):
+            self.emit({"kind": "tool_result", "id": tid, "is_error": True, "output": f"Subagente terminou: {tipo}"})
+        # "interacted" (o chat principal mandou mensagem/esperou o subagente) e outros: só andamento, sem etapa
+        return True
+
+    def on_child_notification(self, filho: str, method: str, p: dict) -> None:
+        """Eventos da thread de um subagente: viram detalhes dentro da etapa (não mexem no turno deste chat)."""
+        self.last_activity = time.time()
+        if method == "item/completed":
+            item = p.get("item") or {}
+            if self._subagente(item, concluido=True):
+                return
+            started = self.items.pop(item.get("id"), None) is not None
+            for ev in codex_item_events(item, include_tool_start=not started):
+                self.emit({**ev, "parent": filho})
+        elif method == "item/started":
+            item = p.get("item") or {}
+            if self._subagente(item):
+                return
+            tool = codex_tool_from_item(item)
+            if tool:
+                self.items[item["id"]] = item
+                self.emit({"kind": "tool", "id": item["id"], "parent": filho, **tool})
+        elif method == "error" and not p.get("willRetry"):
+            self.emit({"kind": "system", "level": "warn",
+                       "text": f"Subagente: {(p.get('error') or {}).get('message', 'erro')}"})
+        elif method == "mcpServer/startupStatus/updated" and p.get("status") == "failed":
+            self.emit({"kind": "system", "level": "warn",
+                       "text": f"Subagente: MCP {p.get('name')} falhou: {p.get('error') or p.get('failureReason')}"})
 
     async def on_server_request(self, rid, method: str, p: dict) -> None:
         try:
@@ -894,6 +1000,82 @@ class CodexSession(Session):
                                   "input": p.get("requestedSchema") if p.get("mode") != "url" else None})
             return {"action": "accept", "content": {}} if res.get("decision") != "deny" else {"action": "decline"}
         raise RuntimeError(f"pedido não suportado: {method}")
+
+
+def _mcps_do_codex() -> set[str]:
+    """Servidores MCP configurados no ~/.codex/config.toml (só esses podem ser desligados por chat)."""
+    import tomllib
+    try:
+        with open(Path.home() / ".codex" / "config.toml", "rb") as f:
+            return set((tomllib.load(f).get("mcp_servers") or {}).keys())
+    except (OSError, ValueError):
+        return set()
+
+
+def _mcps_bloqueados(agent: dict | None) -> list[str]:
+    """"mcp__servidor" (ou "mcp__servidor__*") nas ferramentas bloqueadas do agente = servidor desligado no Codex."""
+    existentes = _mcps_do_codex()
+    nomes = []
+    for t in (agent or {}).get("disallowed_tools") or []:
+        if t.startswith("mcp__"):
+            nome = t.split("__")[1]
+            if nome in existentes and nome not in nomes:
+                nomes.append(nome)
+    return nomes
+
+
+def _toml_str(texto: str) -> str:
+    return json.dumps(texto, ensure_ascii=False)  # as escapes do JSON valem como string básica do TOML
+
+
+def _papel_codex(sub: dict) -> Path:
+    """Arquivo de configuração do papel (subagente) do Codex: modelo, esforço e instruções.
+    (MCPs não entram aqui: o Codex lê [mcp_servers.x] do papel como um servidor novo e rejeita o papel inteiro.
+    O subagente herda os MCPs desligados na conversa que o chamou.)"""
+    linhas = []
+    if sub.get("provider") == "codex" and sub.get("model"):
+        linhas.append(f"model = {_toml_str(sub['model'])}")
+    if sub.get("provider") == "codex" and sub.get("effort"):
+        linhas.append(f"model_reasoning_effort = {_toml_str(sub['effort'])}")
+    instrucoes = "\n\n".join(p for p in (IDIOMA, FUSO, _pasta_do_agente(sub), sub.get("prompt") or "") if p)
+    linhas.append(f"developer_instructions = {_toml_str(instrucoes)}")
+    pasta = store.DATA_DIR / "codex-papeis"
+    pasta.mkdir(parents=True, exist_ok=True)
+    arquivo = pasta / f"{sub['id']}.toml"
+    conteudo = "\n".join(linhas) + "\n"
+    if not arquivo.exists() or arquivo.read_text(encoding="utf-8") != conteudo:
+        arquivo.write_text(conteudo, encoding="utf-8")
+    return arquivo
+
+
+def _config_codex(agent: dict | None) -> dict:
+    """Configuração extra da conversa no Codex (chaves pontuadas, que não apagam o resto do config.toml):
+    - subagentes: no chat de agente, os marcados nele; no chat livre, todos os agentes Codex do Agent Hub.
+      Cada um vira um papel do Codex, chamado pela ferramenta spawn_agent com agent_type = nome do papel;
+    - MCPs bloqueados no agente ficam desligados (ex.: o do Power BI, que pede login da Microsoft)."""
+    config: dict[str, Any] = {}
+    if agent:
+        ids = agent.get("subagents") or []
+    else:
+        ids = [a["id"] for a in store.agents.all() if a.get("provider") == "codex"]
+    for sub_id in ids:
+        sub = store.agents.get(sub_id)
+        if not sub or sub_id == (agent or {}).get("id"):
+            continue
+        papel = _slug_papel(sub["name"])
+        config[f"agents.{papel}.description"] = sub.get("description") or sub["name"]
+        config[f"agents.{papel}.config_file"] = str(_papel_codex(sub)).replace("\\", "/")
+    # MCPs desligados: os do agente e os dos subagentes dele (o subagente herda a configuração desta conversa).
+    for quem in [agent] + [store.agents.get(i) for i in ids]:
+        for nome in _mcps_bloqueados(quem):
+            config[f"mcp_servers.{nome}.enabled"] = False
+    return config
+
+
+def _slug_papel(nome: str) -> str:
+    """Nome do papel: o do agente sem o "(Codex)" do fim, para casar com o nome usado nas instruções."""
+    import re
+    return _slug(re.sub(r"\s*\([^)]*\)\s*$", "", nome))
 
 
 def _sandbox_label(sandbox) -> str:

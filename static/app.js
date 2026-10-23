@@ -58,12 +58,19 @@ function toast(msg, ms = 3500) {
   clearTimeout(toast._t);
   toast._t = setTimeout(() => t.classList.add("hidden"), ms);
 }
+const MSG_OFFLINE = "O servidor do Agent Hub está desligado. Abra pelo atalho “Agent Hub” (ou Iniciar.bat); esta tela reconecta sozinha.";
 async function api(method, url, body) {
-  const res = await fetch(url, {
-    method,
-    headers: body !== undefined ? { "Content-Type": "application/json" } : {},
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
+  let res;
+  try {
+    res = await fetch(url, {
+      method,
+      headers: body !== undefined ? { "Content-Type": "application/json" } : {},
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+  } catch {
+    mostrarOffline(true);
+    throw new Error(MSG_OFFLINE);
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.detail || res.statusText);
   return data;
@@ -114,7 +121,7 @@ function readProviderFields(prefix, provider) {
 /* ------------------------------------------------------------------ navegação */
 function show(view) {
   S.view = view;
-  for (const v of ["chat", "agents", "settings", "import", "start"]) $(`#view-${v}`).classList.toggle("hidden", v !== view);
+  for (const v of ["chat", "agents", "settings", "import", "start", "consumo"]) $(`#view-${v}`).classList.toggle("hidden", v !== view);
   $("#sidebar").classList.remove("open");
   renderChatList();
   renderSideAgents();
@@ -362,6 +369,9 @@ function toolCategory(name) {
 function activityGroup(wrap) {
   const g = S.activity;
   if (g && g.box.isConnected && g.box.parentNode === wrap && wrap.lastElementChild === g.box && !g.done) return g;
+  // Algo entrou depois do grupo (aviso, plano, subagente…): o grupo anterior acabou, então fecha antes de abrir outro.
+  // Sem isso ele ficava "carregando" para sempre no meio da conversa.
+  if (g && !g.done) finishActivity(g);
   const box = h("div", { class: "msg activity-box" });
   const det = h("details", { class: "activity running" },
     `<summary><span class="act-icon"></span><span class="act-text">Trabalhando…</span><span class="act-meta"></span></summary><div class="act-body"></div>`);
@@ -381,8 +391,7 @@ function addActivity(wrap, node, label, category) {
   $(".act-meta", g.det).textContent = g.count ? `${g.count} ${g.count === 1 ? "etapa" : "etapas"}` : "";
   return g;
 }
-function finishActivity() {
-  const g = S.activity;
+function finishActivity(g = S.activity) {
   if (!g || g.done) return;
   g.done = true;
   g.det.classList.remove("running");
@@ -1048,8 +1057,10 @@ function editAgent(id, draft = null) {
   renderAgentList();
   const form = $("#agent-form");
   form.classList.remove("hidden");
-  const claudeAgents = S.agents.filter((x) => x.provider === "claude" && x.id !== id);
   const p = a.provider;
+  const outros = S.agents.filter((x) => x.provider === p && x.id !== id);  // subagentes: mesma IA
+  const listaSub = `<label>Subagentes que ele pode chamar</label>
+    <div class="checks">${outros.length ? outros.map((s) => `<label><input type="checkbox" class="ag-sub" value="${s.id}" ${(a.subagents || []).includes(s.id) ? "checked" : ""}> ${esc(s.name)}</label>`).join("") : `<span class="muted small">Crie outros agentes ${p === "claude" ? "Claude" : "Codex"} para usá-los como subagentes.</span>`}</div>`;
   form.innerHTML = `
     <h2>${id ? "Editar agente" : "Novo agente"}</h2>
     <div class="grid2">
@@ -1077,9 +1088,12 @@ function editAgent(id, draft = null) {
       <label>Ferramentas disponíveis <input class="input" id="ag-tools" value="${esc((a.tools || []).join(", "))}" placeholder="vazio = todas · ex.: Read, Grep, mcp__superset-herval__*"></label>
       <label>Ferramentas bloqueadas <input class="input" id="ag-disallowed_tools" value="${esc((a.disallowed_tools || []).join(", "))}" placeholder="ex.: Bash, Write"></label>
     </div>
-    <label>Subagentes que ele pode chamar</label>
-    <div class="checks">${claudeAgents.length ? claudeAgents.map((s) => `<label><input type="checkbox" class="ag-sub" value="${s.id}" ${(a.subagents || []).includes(s.id) ? "checked" : ""}> ${esc(s.name)}</label>`).join("") : '<span class="muted small">Crie outros agentes Claude para usá-los como subagentes.</span>'}</div>
-    ` : ""}
+    ${listaSub}
+    ` : `
+    <label>Servidores MCP desligados <input class="input" id="ag-disallowed_tools" value="${esc((a.disallowed_tools || []).join(", "))}" placeholder="ex.: mcp__powerbi-modeling-mcp"></label>
+    <div class="hint">MCPs do ~/.codex/config.toml que este agente (e os subagentes dele) não deve usar.</div>
+    ${listaSub}
+    <div class="hint">No Codex, cada subagente vira um papel chamado pela ferramenta spawn_agent, com o modelo, o esforço e as instruções dele.</div>`}
     <div class="actions">
       <button type="submit" class="btn primary">Salvar</button>
       ${id ? `<button type="button" class="btn" id="ag-chat">💬 Novo chat com este agente</button>` : ""}
@@ -1123,11 +1137,9 @@ function readAgentForm(provider) {
     name: v("ag-name").trim(), description: v("ag-description").trim(), provider, cwd: v("ag-cwd").trim(),
     prompt: v("ag-prompt"), welcome: v("ag-welcome"), ...readProviderFields("ag", provider),
   };
-  if (provider === "claude") {
-    body.tools = v("ag-tools");
-    body.disallowed_tools = v("ag-disallowed_tools");
-    body.subagents = $$(".ag-sub:checked").map((x) => x.value);
-  }
+  body.disallowed_tools = v("ag-disallowed_tools");
+  body.subagents = $$(".ag-sub:checked").map((x) => x.value);
+  if (provider === "claude") body.tools = v("ag-tools");
   return body;
 }
 
@@ -1220,10 +1232,48 @@ async function renderMcpCard() {
   if (!data.servers.length) box.innerHTML = '<div class="muted small">Nenhum servidor MCP configurado.</div>';
 }
 
+/* Reinicia o servidor (carrega código novo) e recarrega a tela quando ele voltar. */
+async function reiniciarServidor() {
+  const btn = $("#st-reiniciar");
+  let r;
+  try { r = await api("POST", "/api/servidor/reiniciar", {}); }
+  catch (e) {
+    if (!/trabalhando/.test(e.message)) { toast(e.message); return; }
+    if (!confirm(`${e.message}
+
+Reiniciar mesmo assim?`)) return;
+    try { r = await api("POST", "/api/servidor/reiniciar", { forcar: true }); } catch (e2) { toast(e2.message); return; }
+  }
+  S.reiniciando = true;
+  if (btn) { btn.disabled = true; btn.textContent = "Reiniciando…"; }
+  toast("Reiniciando o Agent Hub… a tela recarrega sozinha.", 20000);
+  const t0 = Date.now();
+  const checar = async () => {
+    try {
+      const i = await (await fetch("/api/servidor", { cache: "no-store" })).json();
+      if (i.inicio !== r.inicio) { location.reload(); return; }
+    } catch { /* ainda trocando */ }
+    if (Date.now() - t0 > 90000) {
+      S.reiniciando = false;
+      toast("O servidor não voltou. Abra pelo atalho Agent Hub.", 8000);
+      if (btn) { btn.disabled = false; btn.textContent = "↻ Reiniciar o Agent Hub"; }
+      return;
+    }
+    setTimeout(checar, 700);
+  };
+  setTimeout(checar, 1200);
+}
+
 async function renderSettings() {
   const m = S.meta;
   const body = $("#settings-body");
   body.innerHTML = `
+    <div class="card"><h3>Agent Hub</h3>
+      <div>Servidor ligado <b id="st-inicio">…</b></div>
+      <div class="hint">Depois de uma atualização do Agent Hub, reinicie por aqui: o servidor liga de novo já com as mudanças e
+        esta tela recarrega sozinha, sem precisar fechar a janela. Conversas que estiverem trabalhando são interrompidas (você é avisado antes).</div>
+      <div class="row gap" style="margin-top:10px"><button class="btn" id="st-reiniciar">↻ Reiniciar o Agent Hub</button></div>
+    </div>
     <div class="card"><h3><span class="badge claude">Claude</span> Claude Agent SDK</h3>
       <div>Versão do Claude Code: <b>${esc(m.claude.version || "consultando…")}</b></div>
       ${m.claude.error ? `<div class="err-box" style="margin-top:8px">${esc(m.claude.error)}</div>` : ""}
@@ -1252,6 +1302,8 @@ async function renderSettings() {
       <label>Fonte das respostas</label>
       <div class="seg" id="st-fonte"><button data-f="">Estilo Claude (serifada)</button><button data-f="sans">Sem serifa</button></div>
     </div>`;
+  api("GET", "/api/servidor").then((i) => { const el = $("#st-inicio"); if (el) el.textContent = fmtQuando(i.inicio); }).catch(() => {});
+  $("#st-reiniciar").onclick = reiniciarServidor;
   $("#st-refresh").onclick = async () => { await api("POST", "/api/meta/refresh"); toast("Consultando o Claude… (alguns segundos)"); setTimeout(async () => { await loadMeta(); renderSettings(); }, 8000); };
   const theme = localStorageGet("theme") || "";
   $$("#st-theme button").forEach((b) => { b.classList.toggle("on", b.dataset.t === theme); b.onclick = () => { setTheme(b.dataset.t); renderSettings(); }; });
@@ -1284,8 +1336,30 @@ function setTheme(t) {
 }
 
 /* ------------------------------------------------------------------ tempo real */
+/* Servidor desligado (console fechado, PC reiniciado…): faixa no topo em vez de "Failed to fetch".
+   Os chats ficam salvos no disco; quando o servidor volta, a tela recarrega os dados sozinha. */
+function mostrarOffline(on) {
+  if (on && S.reiniciando) return;  // reinício pedido pelo usuário: a tela recarrega sozinha
+  let faixa = $("#offline");
+  if (!faixa) {
+    faixa = h("div", { id: "offline", class: "offline hidden" }, `<span class="live-spin"></span><span>${esc(MSG_OFFLINE)}</span>`);
+    document.body.append(faixa);
+  }
+  faixa.classList.toggle("hidden", !on);
+  if (on && !S.offlineTimer) S.offlineTimer = setInterval(verificarServidor, 2000);
+}
+/* Pedido leve (o ícone, sem cache) só para saber se o servidor responde. */
+const servidorNoAr = () => fetch("/static/icone-32.png", { cache: "no-store" }).then((r) => r.ok, () => false);
+async function verificarServidor() {
+  if (!(await servidorNoAr())) return;
+  clearInterval(S.offlineTimer); S.offlineTimer = null;
+  mostrarOffline(false);
+  try { await loadMeta(); await Promise.all([loadChats(), loadAgents()]); route(); toast("Reconectado ao servidor."); }
+  catch { /* se cair de novo, a próxima ação mostra a faixa outra vez */ }
+}
 function connectWs() {
   const ws = new WebSocket(`ws://${location.host}/ws`);
+
   ws.onmessage = (e) => {
     const m = JSON.parse(e.data);
     switch (m.type) {
@@ -1310,6 +1384,7 @@ function connectWs() {
         const c = S.chats.find((x) => x.id === m.chat_id);
         if (c) { c.status = m.status; renderChatList(); if (c.id === S.chatId) renderChatHeader(); }
         if (m.status === "idle" && m.chat_id === S.chatId) finishActivity();
+        if (m.status === "idle") { clearTimeout(S.usoTimer); S.usoTimer = setTimeout(atualizarAlertaConsumo, 3000); }  // limites mudam a cada resposta
         if (m.chat_id === S.chatId) updateLive();
         break;
       }
@@ -1344,7 +1419,7 @@ function connectWs() {
         break;
     }
   };
-  ws.onclose = () => setTimeout(connectWs, 1500);
+  ws.onclose = () => { servidorNoAr().then((ok) => ok || mostrarOffline(true)); setTimeout(connectWs, 1500); };
 }
 function notify(text) {
   if (document.hasFocus()) { toast(text); return; }
@@ -1355,6 +1430,197 @@ function notify(text) {
 async function loadMeta() { S.meta = await api("GET", "/api/meta"); }
 async function loadChats() { S.chats = await api("GET", "/api/chats"); renderChatList(); }
 async function loadAgents() { S.agents = await api("GET", "/api/agents"); if (S.view === "agents") renderAgentList(); renderChatList(); renderSideAgents(); }
+
+/* ------------------------------------------------------------------ consumo */
+/* Aba "Consumo": limites do plano (reais) + de onde vem o uso (aproximado, pelos históricos deste computador). */
+S.consumoPeriodo = localStorageGet("consumoPeriodo") || "dia";
+const fmtNum = (n, casas = 0) => Number(n || 0).toLocaleString("pt-BR", { maximumFractionDigits: casas, minimumFractionDigits: casas });
+const fmtPct = (p) => `${fmtNum(p, p > 0 && p < 1 ? 1 : 0)}%`;
+function fmtTokens(n) {
+  n = n || 0;
+  if (n >= 1e9) return `${fmtNum(n / 1e9, 1)} bi`;
+  if (n >= 1e6) return `${fmtNum(n / 1e6, 1)} mi`;
+  if (n >= 1e3) return `${fmtNum(n / 1e3, 0)} mil`;
+  return fmtNum(n);
+}
+function fmtQuando(ts) {
+  if (!ts) return "";
+  const d = new Date(ts * 1000), hoje = new Date();
+  const hora = d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+  if (d.toDateString() === hoje.toDateString()) return `hoje às ${hora}`;
+  const amanha = new Date(hoje); amanha.setDate(hoje.getDate() + 1);
+  if (d.toDateString() === amanha.toDateString()) return `amanhã às ${hora}`;
+  return `${d.toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "2-digit" })} às ${hora}`;
+}
+function fmtFalta(ts) {
+  const s = ts - Date.now() / 1000;
+  if (s <= 0) return "agora";
+  const h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);
+  return h >= 24 ? `${Math.floor(h / 24)} d ${h % 24} h` : h ? `${h} h ${m} min` : `${m} min`;
+}
+const fmtHaQuanto = (ts) => { const m = Math.round((Date.now() / 1000 - ts) / 60); return m < 1 ? "agora há pouco" : m < 60 ? `há ${m} min` : `há ${Math.round(m / 60)} h`; };
+const corModelo = (nome) => /opus/i.test(nome) ? "var(--claude)" : /sonnet/i.test(nome) ? "#6b8fd6" : /haiku/i.test(nome) ? "#5aa37a" : /fable|mythos/i.test(nome) ? "#a77bd6" : "var(--muted)";
+
+function barraLimite(j) {
+  const nivel = j.pct >= 90 ? "alto" : j.pct >= 75 ? "medio" : "";
+  return `<div class="lim">
+    <div class="lim-top"><b>${esc(j.nome)}</b><span>${fmtPct(j.pct)} usado</span></div>
+    <div class="lim-bar ${nivel}"><span style="width:${Math.min(100, j.pct || 0)}%"></span></div>
+    ${j.reset ? `<div class="hint">Reinicia em ${fmtFalta(j.reset)} (${fmtQuando(j.reset)})</div>` : ""}
+  </div>`;
+}
+function cardLimites(d) {
+  const lc = d.limites_claude, lx = d.codex.limites;
+  const extra = lc?.extra === "rejected"
+    ? `<div class="hint">Uso extra (além do plano): indisponível${lc.extra_motivo === "out_of_credits" ? " — sem créditos" : ""}.</div>` : "";
+  return `<div class="card" id="cs-limites"><h3>Limites do plano</h3>
+    <div class="lim-grid">
+      <div><div class="lim-prov"><span class="badge claude">Claude</span></div>
+        ${lc?.janelas?.length ? lc.janelas.map(barraLimite).join("") + extra + `<div class="hint">Atualizado ${fmtHaQuanto(lc.visto_em)} · vale para toda a sua conta (todos os dispositivos e claude.ai)</div>`
+          : `<div class="hint">Ainda sem informação. Clique em "Atualizar agora".</div>`}
+        <button class="btn" id="cs-lim-atualizar" style="margin-top:8px">↻ Atualizar agora</button>
+      </div>
+      <div><div class="lim-prov"><span class="badge codex">Codex</span>${lx?.plano ? ` <span class="muted small">plano ${esc(lx.plano)}</span>` : ""}</div>
+        ${lx?.janelas?.length ? lx.janelas.map(barraLimite).join("") + `<div class="hint">Visto ${fmtHaQuanto(lx.visto_em)} (última conversa do Codex)</div>`
+          : `<div class="hint">Sem conversas recentes do Codex para ler o limite.</div>`}
+      </div>
+    </div></div>`;
+}
+function tabelaPct(titulo, linhas, extraCols = [], vazio = "") {
+  if (!linhas.length) return vazio ? `<div class="cs-tab"><div class="cs-tab-h"><span>${esc(titulo)}</span></div><div class="hint">${esc(vazio)}</div></div>` : "";
+  return `<div class="cs-tab">
+    <div class="cs-tab-h"><span>${esc(titulo)}</span>${extraCols.map((c) => `<span class="cs-num">${esc(c.titulo)}</span>`).join("")}<span class="cs-num">% do uso</span></div>
+    ${linhas.map((l) => `<div class="cs-tab-l">
+      <span class="cs-nome" title="${esc(l.nome)}">${esc(l.rotulo || l.nome)}<i style="width:${Math.min(100, l.pct)}%"></i></span>
+      ${extraCols.map((c) => `<span class="cs-num">${c.valor(l)}</span>`).join("")}
+      <span class="cs-num">${fmtPct(l.pct)}</span></div>`).join("")}
+  </div>`;
+}
+function linhaDoTempo(c) {
+  const max = Math.max(0.0001, ...c.linha.map((b) => Object.values(b.modelos).reduce((a, v) => a + v, 0)));
+  const modelos = [...new Set(c.linha.flatMap((b) => Object.keys(b.modelos)))];
+  const rot = (t) => { const d = new Date(t * 1000); return c.passo === "hora" ? `${String(d.getHours()).padStart(2, "0")}h` : d.toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit" }); };
+  return `<div class="card"><h3>Linha do tempo <span class="muted small">(${c.passo === "hora" ? "por hora, últimas 24 h" : "por dia, últimos 7 dias"})</span></h3>
+    <div class="cs-linha">${c.linha.map((b) => {
+      const tot = Object.values(b.modelos).reduce((a, v) => a + v, 0);
+      const titulo = `${rot(b.t)}: ${tot ? fmtPct(100 * tot / (c.total_usd || 1)) + " do período" : "sem uso"}${Object.entries(b.modelos).map(([m, v]) => `\n${m}: US$ ${fmtNum(v, 2)}`).join("")}`;
+      return `<div class="cs-col" title="${esc(titulo)}"><div class="cs-pilha" style="height:${(100 * tot / max).toFixed(1)}%">${
+        Object.entries(b.modelos).map(([m, v]) => `<span style="flex:${v};background:${corModelo(m)}"></span>`).join("")}</div><small>${rot(b.t)}</small></div>`;
+    }).join("")}</div>
+    <div class="cs-legenda">${modelos.map((m) => `<span><i style="background:${corModelo(m)}"></i>${esc(m)}</span>`).join("")}</div>
+  </div>`;
+}
+function cardSessoes(lista, codex = false) {
+  if (!lista.length) return `<div class="hint">Nenhuma conversa no período.</div>`;
+  return `<div class="cs-sessoes">${lista.map((s) => `<div class="cs-sessao">
+      <div class="cs-s-top">
+        ${s.chat_id ? `<a href="#/chat/${esc(s.chat_id)}">${esc(s.titulo)}</a>` : `<span>${esc(s.titulo)}</span>`}
+        <span class="grow"></span><b>${fmtPct(s.pct)}</b>
+      </div>
+      <div class="cs-s-info">
+        <span class="tag">${esc(s.origem)}</span>
+        ${codex ? "" : `<span>${fmtNum(s.req)} requisições</span><span>pico de contexto ${fmtTokens(s.pico_ctx)}</span>
+        ${s.subagentes ? `<span>${s.subagentes} subagente(s) · ${s.pct_sub}% da conversa</span>` : ""}
+        ${s.modelos?.length ? `<span>${esc(s.modelos.join(", "))}</span>` : ""}
+        ${s.ultimo ? `<span>último uso ${fmtQuando(s.ultimo)}</span>` : ""}`}
+        ${s.pasta ? `<span class="cs-pasta" title="${esc(s.pasta)}">📁 ${esc(s.pasta)}</span>` : ""}
+      </div></div>`).join("")}</div>`;
+}
+
+async function renderConsumo(forcarLimites = false) {
+  const body = $("#consumo-body");
+  $$("#consumo-periodo button").forEach((b) => {
+    b.classList.toggle("on", b.dataset.p === S.consumoPeriodo);
+    b.onclick = () => { S.consumoPeriodo = b.dataset.p; localStorageSet("consumoPeriodo", b.dataset.p); renderConsumo(); };
+  });
+  if (!body.innerHTML.trim()) body.innerHTML = `<div class="muted small">Lendo os históricos do Claude e do Codex…</div>`;
+  let d;
+  try { d = await api("GET", `/api/consumo?periodo=${S.consumoPeriodo}`); }
+  catch (e) { body.innerHTML = `<div class="err-box">${esc(e.message)}</div>`; return; }
+  if (S.view !== "consumo") return;
+  const c = d.claude, x = d.codex;
+  const tokEntrada = (c.tokens.in || 0) + (c.tokens.cr || 0) + (c.tokens.cw5 || 0) + (c.tokens.cw1h || 0);
+  const nomePeriodo = d.periodo === "dia" ? "Últimas 24 h" : "Últimos 7 dias";
+  body.innerHTML = `<div class="cs-grid">
+    ${cardLimites(d)}
+    <div class="card"><h3>${nomePeriodo} · Claude</h3>
+      <div class="cs-kpis">
+        <div><b>${fmtNum(c.requisicoes)}</b><span>requisições ao modelo</span></div>
+        <div><b>${fmtNum(c.sessoes)}</b><span>conversas</span></div>
+        <div><b>${fmtTokens(tokEntrada)}</b><span>tokens lidos (contexto)</span></div>
+        <div><b>${fmtTokens(c.tokens.out)}</b><span>tokens gerados</span></div>
+        <div><b>${fmtPct(c.cache_pct)}</b><span>do contexto veio do cache</span></div>
+        <div title="Estimativa do Claude Code em preço de API. No plano de assinatura não é cobrado, mas é o que consome o limite."><b>US$ ${fmtNum(c.total_usd, 2)}</b><span>equivalente em API</span></div>
+      </div>
+      <div class="hint">Cache: ${fmtTokens(c.tokens.cr)} lidos do cache (custam ~10%), ${fmtTokens((c.tokens.cw5 || 0) + (c.tokens.cw1h || 0))} gravados no cache, ${fmtTokens(c.tokens.in)} sem cache.</div>
+    </div>
+    <div class="card cs-insights"><h3>O que mais pesa no seu consumo?</h3>
+      <div class="hint">São características independentes do seu uso, não uma divisão (a soma pode passar de 100%).</div>
+      ${c.insights.length ? c.insights.map((i) => `<div class="cs-ins"><div><b>${fmtPct(i.pct)}</b> ${esc(i.titulo)}</div><div class="hint">${esc(i.dica)}</div></div>`).join("")
+        : `<div class="hint" style="margin-top:8px">Sem uso do Claude no período.</div>`}
+    </div>
+    ${c.linha.length ? linhaDoTempo(c) : ""}
+    <div class="card cs-tabs cs-largo">
+      ${tabelaPct("Modelos", c.modelos, [{ titulo: "requisições", valor: (l) => fmtNum(l.req) }, { titulo: "tokens gerados", valor: (l) => fmtTokens(l.tokens.out) }])}
+      ${tabelaPct("Origem", c.origens)}
+      ${tabelaPct("Subagentes", c.subagentes, [], "Nenhum subagente no período.")}
+      ${tabelaPct("Servidores MCP", c.mcps, [{ titulo: "chamadas", valor: (l) => fmtNum(l.chamadas) }, { titulo: "resultados", valor: (l) => fmtTokens(l.tokens_resultado) + " tok" }], "Nenhum MCP usado no período.")}
+      ${tabelaPct("Skills", c.skills.map((s) => ({ ...s, rotulo: "/" + s.nome })), [], "Nenhuma skill usada no período.")}
+      ${tabelaPct("Pastas", c.pastas.map((p) => ({ ...p, rotulo: p.nome.replace(/^C:\\Users\\[^\\]+/i, "~") })))}
+    </div>
+    <div class="card"><h3>Conversas que mais consumiram</h3>${cardSessoes(c.top_sessoes)}</div>
+    <div class="cs-coluna">
+    <div class="card"><h3>Ferramentas mais usadas</h3>
+      <div class="cs-ferr">${c.ferramentas.map((f) => `<span class="tag" title="${esc(f.nome)}">${esc(f.nome)} <b>${fmtNum(f.chamadas)}</b></span>`).join("") || `<span class="hint">Nenhuma.</span>`}</div>
+    </div>
+    <div class="card"><h3>${nomePeriodo} · <span class="badge codex">Codex</span></h3>
+      ${x.sessoes ? `<div class="cs-kpis">
+          <div><b>${fmtNum(x.sessoes)}</b><span>conversas</span></div>
+          <div><b>${fmtTokens(x.tokens.in)}</b><span>tokens lidos</span></div>
+          <div><b>${fmtPct(x.tokens.in ? 100 * x.tokens.cached / x.tokens.in : 0)}</b><span>do contexto veio do cache</span></div>
+          <div><b>${fmtTokens(x.tokens.out)}</b><span>tokens gerados</span></div>
+          <div><b>${fmtTokens(x.tokens.reasoning)}</b><span>de raciocínio</span></div>
+        </div>
+        <div class="cs-tabs">${tabelaPct("Modelos", x.modelos)}</div>
+        <h4 class="cs-sub">Conversas que mais consumiram</h4>${cardSessoes(x.top_sessoes, true)}`
+        : `<div class="hint">Sem uso do Codex no período.</div>`}
+    </div>
+    </div>
+    </div>
+    <div class="hint cs-rodape">Aproximado, com base nas conversas deste computador (VS Code e Agent Hub). Não inclui outros dispositivos nem o claude.ai.
+      "% do uso" é a participação no custo equivalente em preço de API, que é o que consome o limite.
+      Os limites do plano, por outro lado, são os números oficiais da sua conta. Calculado em ${fmtNum(d.duracao_s, 1)} s.</div>`;
+  $("#cs-lim-atualizar").onclick = () => atualizarLimites(true);
+  const lc = d.limites_claude;
+  if (forcarLimites || !lc || Date.now() / 1000 - lc.visto_em > 15 * 60) atualizarLimites(false);
+}
+async function atualizarLimites(avisar) {
+  const btn = $("#cs-lim-atualizar");
+  if (btn) { btn.disabled = true; btn.textContent = "Consultando…"; }
+  try {
+    await api("POST", "/api/consumo/limites");
+    if (S.view === "consumo") await renderConsumo();
+    atualizarAlertaConsumo();
+  } catch (e) { if (avisar) toast(e.message); if (btn) { btn.disabled = false; btn.textContent = "↻ Atualizar agora"; } }
+}
+/* Selos no botão "Consumo": quanto do limite do plano já foi USADO no Claude e no Codex (o maior entre as
+   janelas de cada um, ex.: sessão de 5 h ou semana). A cor muda a partir de 75% e de 90%. */
+function seloUso(nome, lim) {
+  const janelas = lim?.janelas || [];
+  if (!janelas.length) return "";
+  const pior = janelas.reduce((a, j) => ((j.pct || 0) > (a.pct || 0) ? j : a), janelas[0]);
+  const pct = Math.round(pior.pct || 0);
+  const nivel = pct >= 90 ? "alto" : pct >= 75 ? "medio" : "";
+  const titulo = `${nome}: ` + janelas.map((j) => `${j.nome} ${Math.round(j.pct || 0)}% usado${j.reset ? ` (reinicia ${fmtQuando(j.reset)})` : ""}`).join(" · ");
+  return `<span class="uso-selo ${nivel}" title="${esc(titulo)}">${nome} ${pct}%</span>`;
+}
+async function atualizarAlertaConsumo() {
+  try {
+    const r = await api("GET", "/api/consumo/limites");
+    const selos = [seloUso("Claude", r.limites), seloUso("Codex", r.codex)].filter(Boolean);
+    $("#consumo-alert").innerHTML = selos.join('<span class="uso-sep">|</span>');
+  } catch { /* sem dados ainda */ }
+}
 
 function route() {
   const hash = location.hash || "#/";
@@ -1370,6 +1636,7 @@ function route() {
     return;
   }
   if (hash === "#/settings") { show("settings"); renderSettings(); return; }
+  if (hash === "#/consumo") { show("consumo"); renderConsumo(); return; }
   if (hash === "#/import") { show("import"); renderImport(); return; }
   const nv = hash.match(/^#\/novo(?:\/(\w+))?(?:\?p=(claude|codex))?/);
   if (nv) return openStart(nv[1] || null, nv[2] || null);
@@ -1401,6 +1668,7 @@ function bind() {
   }));
   $("#import-search").oninput = () => renderImportList();
   $("#btn-settings").onclick = () => (location.hash = "#/settings");
+  $("#btn-consumo").onclick = () => (location.hash = "#/consumo");
   $("#btn-new-agent").onclick = () => editAgent(null);
   $("#chat-search").oninput = renderChatList;
   $("#btn-menu").onclick = () => $("#sidebar").classList.toggle("open");
@@ -1450,11 +1718,21 @@ function bind() {
   setTheme(localStorageGet("theme") || "");
   setFonte(localStorageGet("fonte") || "");
   bind();
-  try { await loadMeta(); } catch (e) { toast("Falha ao carregar: " + e.message); return; }
+  try { await loadMeta(); }
+  catch (e) {  // servidor ainda desligado: espera ele subir e recarrega a página
+    if (e.message !== MSG_OFFLINE) toast("Falha ao carregar: " + e.message);
+    const tentar = () => fetch("/api/meta").then((r) => (r.ok ? location.reload() : setTimeout(tentar, 2000)), () => setTimeout(tentar, 2000));
+    setTimeout(tentar, 2000);
+    return;
+  }
   await Promise.all([loadChats(), loadAgents()]);
   connectWs();
+  // A queda do servidor nem sempre fecha o WebSocket na hora: confere de tempos em tempos.
+  setInterval(async () => { if (!S.offlineTimer && !document.hidden && !(await servidorNoAr())) mostrarOffline(true); }, 5000);
   route();
   updateMcpAlert();
+  atualizarAlertaConsumo();
+  setInterval(atualizarAlertaConsumo, 5 * 60 * 1000);
   if (S.meta.mcpIssues) toast(`⚠ ${S.meta.mcpIssues} servidor(es) MCP com problema. Veja em Ambiente.`, 8000);
   try { if (Notification.permission === "default") Notification.requestPermission(); } catch { /* ok */ }
   // o Claude pode demorar alguns segundos para informar modelos/comandos na primeira vez

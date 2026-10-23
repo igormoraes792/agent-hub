@@ -9,7 +9,7 @@ import asyncio
 import os
 import re
 import sys
-import webbrowser
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -17,7 +17,8 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from hub import importer, mcp_health, providers, store
+from hub import consumo, importer, mcp_health, providers, store
+from hub.janela import abrir_janela
 from hub.sessions import AGENT_CONTROLLED, bus, codex_server, effective_chat, manager
 
 ROOT = Path(__file__).resolve().parent
@@ -42,9 +43,56 @@ async def lifespan(_app: FastAPI):
     asyncio.get_running_loop().set_exception_handler(_ignore_dropped_connections)
     providers.claude_meta.refresh_in_background()
     reaper = asyncio.create_task(manager.reap_idle())
+    asyncio.get_running_loop().run_in_executor(None, consumo.resumo, "semana")  # deixa a aba Consumo pronta
+    vigia = asyncio.create_task(_desligar_sem_janelas()) if getattr(_app.state, "sozinho", False) else None
     yield
     reaper.cancel()
+    if vigia:
+        vigia.cancel()
     await manager.close_all()
+
+
+JANELAS = {"abertas": 0}  # janelas/abas do hub conectadas agora
+INICIO = time.time()  # identifica esta execução do servidor (a tela recarrega quando muda)
+
+
+def _chats_ocupados() -> list[str]:
+    ocupados = []
+    for cid, s in manager.sessions.items():
+        if s.status in ("running", "waiting") or getattr(s, "tasks_running", None):
+            ocupados.append((store.chats.get(cid) or {}).get("title") or cid)
+    return ocupados
+
+
+async def _desligar_sem_janelas() -> None:
+    """Modo janela única (atalho "Agent Hub"): o servidor se desliga sozinho quando a última janela fecha.
+    Se algum chat ainda estiver trabalhando, espera ele terminar antes de desligar."""
+    ocioso_desde = time.time() + 45  # tempo para a primeira janela abrir
+    while True:
+        await asyncio.sleep(3)
+        if JANELAS["abertas"] or _chats_ocupados():
+            ocioso_desde = time.time()
+        elif time.time() - ocioso_desde > 15:  # folga para recarregar a página (F5) sem derrubar o servidor
+            print("Nenhuma janela aberta: desligando o servidor.", flush=True)
+            _garantir_saida()
+            app.state.servidor.should_exit = True
+            return
+
+
+def _garantir_saida(prazo: float = 20) -> None:
+    """Se o processo não terminar sozinho no prazo (algo travado no encerramento), registra onde travou e sai.
+    Sem isso, um servidor "fantasma" ficava vivo sem atender a porta."""
+    import faulthandler
+    import threading
+
+    def forcar():
+        time.sleep(prazo)
+        print(f"O servidor não terminou em {prazo:.0f} s; onde travou:", flush=True)
+        faulthandler.dump_traceback(file=sys.stdout, all_threads=True)
+        sys.stdout.flush()
+        os._exit(0)
+
+    threading.Thread(target=forcar, daemon=True).start()
 
 
 app = FastAPI(title="Agent Hub", lifespan=lifespan)
@@ -67,6 +115,55 @@ async def only_local_origins(request: Request, call_next):
 @app.get("/")
 async def index():
     return FileResponse(ROOT / "static" / "index.html", headers={"Cache-Control": "no-store"})
+
+
+# --- servidor ------------------------------------------------------------------------------------
+@app.get("/api/servidor")
+async def servidor_info():
+    return {"inicio": INICIO, "pid": os.getpid(), "ocupados": _chats_ocupados()}
+
+
+@app.post("/api/servidor/reiniciar")
+async def servidor_reiniciar(body: dict):
+    """Liga um servidor novo (com o código atualizado) e desliga este. A tela recarrega sozinha."""
+    import subprocess
+    ocupados = _chats_ocupados()
+    if ocupados and not body.get("forcar"):
+        raise HTTPException(409, "Estes chats estão trabalhando e serão interrompidos: " + "; ".join(ocupados))
+    args = list(sys.argv[1:])
+    if "--no-browser" not in args:
+        args.append("--no-browser")  # a janela que já está aberta reconecta; não abre outra
+    subprocess.Popen([sys.executable, "-u", str(ROOT / "server.py"), *args], cwd=ROOT,
+                     env={**os.environ, "AGENT_HUB_REINICIO": "1"}, stdin=subprocess.DEVNULL,
+                     stdout=sys.stdout, stderr=sys.stderr)
+    print("Reiniciando o servidor (pedido pela tela Ambiente).", flush=True)
+
+    def sair():
+        _garantir_saida()
+        app.state.servidor.should_exit = True
+
+    asyncio.get_running_loop().call_later(0.5, sair)
+    return {"ok": True, "inicio": INICIO}
+
+
+# --- consumo -------------------------------------------------------------------------------------
+@app.get("/api/consumo")
+async def consumo_resumo(periodo: str = "dia"):
+    return await asyncio.to_thread(consumo.resumo, "semana" if periodo == "semana" else "dia")
+
+
+@app.get("/api/consumo/limites")
+async def consumo_limites_salvos():
+    return {"limites": consumo.limites_claude(), "codex": await asyncio.to_thread(consumo.limites_codex)}
+
+
+@app.post("/api/consumo/limites")
+async def consumo_limites():
+    """Consulta os limites do plano do Claude agora (uma pergunta mínima ao Haiku)."""
+    try:
+        return {"limites": await asyncio.wait_for(consumo.atualizar_limites_claude(), 90)}
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"Não consegui consultar os limites: {e}") from None
 
 
 # --- meta ---------------------------------------------------------------------------------------
@@ -522,28 +619,26 @@ async def websocket(ws: WebSocket):
         return
     await ws.accept()
     queue = bus.subscribe()
-    try:
-        await ws.send_json({"type": "hello", "statuses": manager.statuses(), "pending": manager.all_pending()})
+    JANELAS["abertas"] += 1
+
+    async def enviar():
         while True:
             await ws.send_json(await queue.get())
+
+    envio = None
+    try:
+        await ws.send_json({"type": "hello", "statuses": manager.statuses(), "pending": manager.all_pending()})
+        envio = asyncio.create_task(enviar())
+        # Fica ouvindo para saber na hora que a janela fechou (só enviando, a queda passaria despercebida).
+        while (await ws.receive())["type"] != "websocket.disconnect":
+            pass
     except (WebSocketDisconnect, RuntimeError, ConnectionError, OSError):
         pass  # aba fechada, recarregada ou PC suspenso: desconexão normal
     finally:
+        if envio:
+            envio.cancel()
         bus.unsubscribe(queue)
-
-
-def abrir_janela(url: str, aba: bool = False) -> None:
-    """Abre o hub numa janela própria do Edge/Chrome (modo app): sem barra de endereço e com o ícone
-    do Agent Hub na barra de tarefas. Sem Edge/Chrome (ou com --aba), abre no navegador padrão."""
-    if not aba:
-        import subprocess
-        candidatos = [Path(os.environ.get(v, "")) / sub for v in ("ProgramFiles(x86)", "ProgramFiles", "LOCALAPPDATA")
-                      for sub in (r"Microsoft\Edge\Application\msedge.exe", r"Google\Chrome\Application\chrome.exe")]
-        for exe in candidatos:
-            if exe.is_file():
-                subprocess.Popen([str(exe), f"--app={url}", "--window-size=1360,900"])
-                return
-    webbrowser.open(url)
+        JANELAS["abertas"] -= 1
 
 
 def main() -> None:
@@ -553,6 +648,8 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=PORT)
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--aba", action="store_true", help="abrir numa aba do navegador padrão em vez de janela própria")
+    parser.add_argument("--sozinho", action="store_true",
+                        help="desligar quando a última janela fechar (usado pelo atalho Agent Hub)")
     args = parser.parse_args()
     if args.port != PORT:
         os.environ["AGENT_HUB_PORT"] = str(args.port)
@@ -563,7 +660,28 @@ def main() -> None:
         import threading
         threading.Timer(1.5, lambda: abrir_janela(url, args.aba)).start()
     print(f"Agent Hub rodando em {url}  (Ctrl+C para parar)")
-    uvicorn.run(app, host="127.0.0.1", port=args.port, loop="asyncio", log_level="warning")
+    # timeout_graceful_shutdown: no Windows (Python 3.12+) o desligamento pode ficar esperando para sempre por
+    # conexões que já fecharam; com o prazo ele segue e o processo termina.
+    servidor = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=args.port, loop="asyncio", log_level="warning",
+                                             timeout_graceful_shutdown=5))
+    app.state.servidor = servidor
+    app.state.sozinho = args.sozinho
+    if os.environ.pop("AGENT_HUB_REINICIO", None):
+        _esperar_porta_livre(args.port)
+    servidor.run()
+
+
+def _esperar_porta_livre(porta: int, prazo: float = 40) -> None:
+    """Reinício: o servidor antigo ainda está saindo; espera ele soltar a porta."""
+    import socket
+    fim = time.time() + prazo
+    while time.time() < fim:
+        with socket.socket() as s:
+            try:
+                s.bind(("127.0.0.1", porta))
+                return
+            except OSError:
+                time.sleep(0.3)
 
 
 if __name__ == "__main__":

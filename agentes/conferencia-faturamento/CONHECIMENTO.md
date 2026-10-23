@@ -118,6 +118,11 @@ Descobrir como o painel calcula o indicador, e reproduzir **a mesma regra** por 
    com `GROUP BY` na chave e **sem ORDER BY/LIMIT** (o script pagina sozinho).
 5. Valide: a soma do CSV deve bater com o número do KPI do painel no mesmo recorte (rode a métrica agregada uma vez).
 
+**Horários (fuso):** as colunas técnicas do Dremio (`dh_update_silver`, `dh_update_iceberg` e demais `dh_update_*`/`dh_insert_*`)
+e o `changed_on` das consultas do Superset estão em **UTC**. Subtraia 3 horas antes de citar (ex.: `dh_update_silver`
+`2026-10-21T14:20` = **11:20 de Brasília**). Datas de negócio (`dt_captacao`, data de faturamento, emissão) já estão no horário
+local: não converta. Todo horário no relatório deve estar no horário de Brasília.
+
 Chave de documento: `co_id_order` (= `NU_DOCUMENTO` do Power BI). Outras chaves úteis: `co_ordem_venda_sap` (zeros à esquerda),
 `nu_pedido`, `co_id_pedido_marketplace`.
 
@@ -165,4 +170,5 @@ Objetivo: o Vô conseguir **corrigir** a origem. Estrutura:
 5. **Não explicado**: o que sobrou, com exemplos.
 6. **Fechamento**: uma linha oferecendo exportar (ex.: "Posso gerar a lista completa dos 834 documentos em Excel, se quiser").
    Não gere nenhum arquivo sem o pedido do usuário (seção 1).
-O relatório vai **na conversa**. Valores em R$ no formato brasileiro (1.234,56). Sem jargão técnico além do necessário.
+O relatório vai **na conversa**. Valores em R$ no formato brasileiro (1.234,56). Horários sempre no horário de Brasília
+(converta os técnicos que vêm em UTC; seção 4). Sem jargão técnico além do necessário.

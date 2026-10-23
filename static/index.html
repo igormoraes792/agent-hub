@@ -30,6 +30,7 @@
     <div class="side-foot">
       <button id="btn-import" class="btn ghost block">⤓ Importar conversas</button>
       <button id="btn-agents" class="btn ghost block">🤖 Agentes</button>
+      <button id="btn-consumo" class="btn ghost block">📊 Consumo <span id="consumo-alert" class="uso-selos"></span></button>
       <button id="btn-settings" class="btn ghost block">⚙️ Ambiente <span id="mcp-alert" class="alert-badge hidden"></span></button>
     </div>
   </aside>
@@ -123,6 +124,20 @@
         <input id="import-search" class="input" placeholder="Buscar por título ou pasta…">
         <div id="import-list" class="import-list"></div>
       </div>
+    </section>
+
+    <!-- consumo -->
+    <section id="view-consumo" class="view hidden">
+      <header class="chat-head">
+        <button class="btn ghost icon only-mobile" data-action="menu">☰</button>
+        <h2>Consumo</h2>
+        <div class="grow"></div>
+        <div class="seg seg-sm" id="consumo-periodo">
+          <button type="button" data-p="dia">Dia</button>
+          <button type="button" data-p="semana">Semana</button>
+        </div>
+      </header>
+      <div id="consumo-body" class="settings-page consumo-page"></div>
     </section>
 
     <!-- ambiente -->
