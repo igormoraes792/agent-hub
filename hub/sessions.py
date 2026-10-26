@@ -1024,6 +1024,26 @@ def _mcps_bloqueados(agent: dict | None) -> list[str]:
     return nomes
 
 
+# MCPs com ferramentas liberadas no Codex (sem o "MCP pede confirmação" a cada uso). Só as ferramentas listadas
+# continuam pedindo confirmação: as que apagam coisas ou mexem em usuários, permissões e conexões.
+MCP_LIBERADOS_CODEX: dict[str, list[str]] = {
+    "superset-herval": [
+        "superset_annotation_delete", "superset_annotation_layer_delete", "superset_chart_delete",
+        "superset_dashboard_delete", "superset_dashboard_embedded_delete", "superset_dashboard_filter_delete",
+        "superset_database_delete", "superset_dataset_delete", "superset_group_delete", "superset_report_delete",
+        "superset_rls_delete", "superset_role_delete", "superset_saved_query_delete", "superset_tag_delete",
+        "superset_user_delete",
+        "superset_user_create", "superset_user_update", "superset_role_create", "superset_role_update",
+        "superset_role_permission_add", "superset_role_copy_permissions", "superset_bulk_user_role_add",
+        "superset_bulk_user_role_remove", "superset_bulk_user_role_replace", "superset_group_create",
+        "superset_group_update", "superset_group_add_roles", "superset_group_remove_roles",
+        "superset_group_add_users", "superset_group_remove_users", "superset_rls_create", "superset_rls_update",
+        "superset_dashboard_grant_role_access", "superset_dashboard_revoke_role_access",
+        "superset_database_create", "superset_database_update", "superset_assets_import",
+    ],
+}
+
+
 def _toml_str(texto: str) -> str:
     return json.dumps(texto, ensure_ascii=False)  # as escapes do JSON valem como string básica do TOML
 
@@ -1069,13 +1089,22 @@ def _config_codex(agent: dict | None) -> dict:
     for quem in [agent] + [store.agents.get(i) for i in ids]:
         for nome in _mcps_bloqueados(quem):
             config[f"mcp_servers.{nome}.enabled"] = False
+    # MCPs liberados: as ferramentas rodam sem pedir confirmação, menos as sensíveis da lista.
+    existentes = _mcps_do_codex()
+    for nome, perguntar in MCP_LIBERADOS_CODEX.items():
+        if nome in existentes and config.get(f"mcp_servers.{nome}.enabled") is not False:
+            config[f"mcp_servers.{nome}.default_tools_approval_mode"] = "approve"
+            for ferramenta in perguntar:
+                config[f"mcp_servers.{nome}.tools.{ferramenta}.approval_mode"] = "prompt"
     return config
 
 
 def _slug_papel(nome: str) -> str:
     """Nome do papel: o do agente sem o "(Codex)" do fim, para casar com o nome usado nas instruções."""
     import re
-    return _slug(re.sub(r"\s*\([^)]*\)\s*$", "", nome))
+    import unicodedata
+    sem_acento = unicodedata.normalize("NFKD", nome).encode("ascii", "ignore").decode()  # Liberação -> Liberacao
+    return _slug(re.sub(r"\s*\([^)]*\)\s*$", "", sem_acento))
 
 
 def _sandbox_label(sandbox) -> str:
