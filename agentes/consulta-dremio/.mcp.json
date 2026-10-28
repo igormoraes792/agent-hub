@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "dremio": {
+      "type": "stdio",
+      "command": "C:/Users/igor.moraes/.local/bin/uv.exe",
+      "args": [
+        "run", "--directory", "C:/Users/igor.moraes/Downloads/PY/agent-hub/mcp/dremio-mcp",
+        "dremio-mcp-server", "run",
+        "--cfg", "C:/Users/igor.moraes/Downloads/PY/agent-hub/data/dremioai.yaml"
+      ]
+    }
+  }
+}

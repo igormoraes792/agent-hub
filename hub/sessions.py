@@ -201,8 +201,15 @@ class ClaudeSession(Session):
                     model=None if sub.get("model") in (None, "", "default") else sub["model"],
                 )
 
+        # MCPs próprios do agente (.mcp.json na pasta dele): o SDK não carrega .mcp.json de pasta não confiada.
+        mcp_agente = Path(agent["cwd"]) / ".mcp.json" if agent and agent.get("cwd") else None
+        mcp_servers = {}
+        if mcp_agente and mcp_agente.is_file():
+            mcp_servers = json.loads(mcp_agente.read_text(encoding="utf-8")).get("mcpServers") or {}
+
         model = chat.get("model")
         return ClaudeAgentOptions(
+            mcp_servers=mcp_servers,
             cwd=chat.get("cwd") or None,
             model=None if model in (None, "", "default") else model,
             effort=chat.get("effort") or None,

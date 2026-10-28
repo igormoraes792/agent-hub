@@ -6,3 +6,5 @@ __pycache__/
 agentes/*/.claude/
 # atalho com caminhos desta máquina
 *.lnk
+# MCPs de terceiros (repositórios próprios, instalados localmente)
+mcp/
