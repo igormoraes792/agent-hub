@@ -9,7 +9,8 @@
 ## 2. Como consultar
 - Descobrir antes de consultar: listar/buscar tabelas, ver o esquema (GetSchemaOfTable) e só então montar o SQL.
 - Nunca `SELECT *` em views grandes (ex.: `VENDAS_CONSOLIDADA_DASH`): só colunas específicas, agregações e `LIMIT`.
-- Caminhos com espaço vão entre aspas: `GOLD."GRUPO HERVAL".VENDAS."VDS.VENDAS_CONSOLIDADA_DASH"`.
+- Caminhos com espaço vão entre aspas: `GOLD."GRUPO HERVAL".VENDAS."VDS.VENDAS_CONSOLIDADA_DASH"`. As ferramentas de
+  esquema e linhagem (`GetSchemaOfTable`, `GetTableOrViewLineage`) usam esse mesmo formato, numa string só.
 - Literais só em Latin-1: `→`, `—`, `›` dão "Error during planning". Acentos do português funcionam.
 - Datas: usar literais `DATE '2026-10-01'` ou `'2026-10-01'`; timestamp com microssegundos dá
   `GandivaException: Invalid millis for timestamp value`.

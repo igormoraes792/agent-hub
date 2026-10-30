@@ -2,3 +2,4 @@ claude-agent-sdk>=0.2.167
 fastapi>=0.143
 uvicorn[standard]>=0.54
 openpyxl>=3.1
+pywin32>=306; sys_platform == "win32"
