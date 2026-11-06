@@ -206,7 +206,7 @@ function upsertChat(chat) {
 const currentChat = () => S.chats.find((c) => c.id === S.chatId);
 
 async function openChat(id) {
-  if (S.chatId !== id) { S.anexos.chat = []; renderTray("chat"); }  // anexos não "vazam" para outro chat
+  if (S.chatId !== id) { guardarRascunho(); restaurarRascunho(id); }  // cada chat com o seu texto e anexos
   S.chatId = id;
   show("chat");
   const msgs = $("#messages");
@@ -229,6 +229,26 @@ async function openChat(id) {
   renderApprovals();
   scrollDown(true);
   $("#input").focus();
+}
+
+/* Rascunho por chat: a caixa de texto é uma só, então o que não foi enviado fica guardado ao trocar de chat. */
+S.rascunhos = {};  // chatId -> { texto, anexos }
+
+function guardarRascunho() {
+  if (!S.chatId) return;
+  const texto = $("#input").value;
+  if (texto.trim() || S.anexos.chat.length) S.rascunhos[S.chatId] = { texto, anexos: S.anexos.chat };
+  else delete S.rascunhos[S.chatId];
+}
+
+function restaurarRascunho(id) {
+  const r = S.rascunhos[id] || { texto: "", anexos: [] };
+  $("#input").value = r.texto;
+  S.anexos.chat = r.anexos;
+  renderTray("chat");
+  autosize();
+  hideSlash();
+  atualizarBotaoEnviar("chat");
 }
 
 function introText(chat) {
@@ -878,6 +898,7 @@ S.start = null;  // { agentId, provider }
 function openStart(agentId = null, provider = null) {
   const agent = S.agents.find((a) => a.id === agentId);
   if (agentId && !agent) { toast("Agente não encontrado."); location.hash = "#/"; return; }
+  guardarRascunho();
   S.chatId = null;
   S.start = { agentId: agent?.id || null, provider: agent?.provider || provider || "claude" };
   show("start");
@@ -1410,6 +1431,7 @@ function connectWs() {
         break;
       case "chat_deleted":
         S.chats = S.chats.filter((c) => c.id !== m.chat_id);
+        delete S.rascunhos[m.chat_id];
         if (S.chatId === m.chat_id) { S.chatId = null; location.hash = "#/"; }
         renderChatList();
         break;
