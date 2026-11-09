@@ -16,7 +16,7 @@ from collections import deque
 from typing import Any
 
 from . import consumo, store
-from .providers import find_codex
+from .providers import find_antigravity, find_codex
 
 MAX_OUTPUT_CHARS = 20_000
 IDLE_DISCONNECT_SECONDS = 20 * 60
@@ -1191,6 +1191,162 @@ def codex_item_events(item: dict, include_tool_start: bool = True, include_user:
 
 
 # =============================================================================================
+# Antigravity (Google Gemini CLI / agy)
+# =============================================================================================
+class AntigravitySession(Session):
+    provider = "antigravity"
+
+    def __init__(self, chat: dict):
+        super().__init__(chat)
+        self.proc: asyncio.subprocess.Process | None = None
+        self.conversation_id: str | None = chat.get("conversation_id")
+        self.reopen_pending = False
+        self.turn_started_at = 0.0
+
+    async def send(self, text: str, images: list[dict] | None = None, files: list[dict] | None = None,
+                   files_note: str = "") -> None:
+        self.emit_user(text, images, files)
+        agy_path = find_antigravity()
+        if not agy_path:
+            self.emit({"kind": "error", "text": "Antigravity CLI (agy.exe) não encontrado no sistema. Defina AGY_PATH ou ANTIGRAVITY_PATH."})
+            self.set_status("idle")
+            return
+
+        chat = self.chat
+        agent = self.agent()
+        prompt_text = self.texto_para_ia(text, files, files_note)
+        if agent and agent.get("prompt"):
+            prompt_text = f"[Instruções do Agente ({agent['name']})]:\n{agent['prompt']}\n\n[Mensagem]:\n{prompt_text}"
+
+        cmd = [agy_path, "-p", prompt_text, "--output-format", "stream-json"]
+        if self.conversation_id:
+            cmd.extend(["--conversation", self.conversation_id])
+
+        model = chat.get("model") or (agent.get("model") if agent else None)
+        if model and model != "default":
+            cmd.extend(["--model", model])
+
+        effort = chat.get("effort") or (agent.get("effort") if agent else None)
+        if effort:
+            cmd.extend(["--effort", effort])
+
+        perm = chat.get("permission_mode") or (agent.get("permission_mode") if agent else None)
+        if perm == "dangerously-skip-permissions":
+            cmd.append("--dangerously-skip-permissions")
+        elif perm in ("accept-edits", "auto", "plan"):
+            cmd.extend(["--mode", perm])
+
+        cwd = chat.get("cwd") or (agent.get("cwd") if agent else None) or str(Path.home())
+        env = os.environ.copy()
+
+        self.set_status("running")
+        self.turn_started_at = time.time()
+        response_text = ""
+        collected_delta = ""
+        last_usage = None
+
+        try:
+            self.proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=cwd,
+                env=env,
+            )
+
+            while True:
+                line_bytes = await self.proc.stdout.readline()
+                if not line_bytes:
+                    break
+                line = line_bytes.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                event_type = data.get("event")
+                if event_type == "init":
+                    conv_id = data.get("conversation_id")
+                    if conv_id and conv_id != self.conversation_id:
+                        self.conversation_id = conv_id
+                        self.save_chat(conversation_id=conv_id)
+                    init_data = data.get("init", {})
+                    mode_info = init_data.get("permission_mode", "")
+                    m_label = model or "Gemini 3.8 Flash"
+                    self.emit({"kind": "system", "text": f"Antigravity conectado · modelo {m_label} · modo {mode_info or 'padrão'}"}, persist=False)
+
+                elif event_type == "step_update":
+                    step = data.get("step_update", {})
+                    stype = step.get("step_type")
+                    state = step.get("state")
+                    delta = step.get("text_delta")
+                    if step.get("usage"):
+                        last_usage = step["usage"]
+                    if delta:
+                        collected_delta += delta
+                        self.delta(delta)
+                    if stype in ("tool_use", "call_tool", "command_execution") and state == "ACTIVE":
+                        tname = step.get("tool_name") or step.get("command") or "ferramenta"
+                        tinput = step.get("input") or step.get("args") or {}
+                        self.emit({"kind": "tool", "id": str(step.get("step_index", "")), "name": tname, "input": tinput})
+                    elif stype in ("tool_use", "call_tool", "command_execution") and state == "DONE":
+                        tout = step.get("output") or step.get("result") or ""
+                        self.emit({"kind": "tool_result", "id": str(step.get("step_index", "")), "output": _clip(str(tout)), "is_error": False})
+
+                elif event_type == "result":
+                    res = data.get("result", {})
+                    response_text = res.get("response") or collected_delta
+                    if res.get("usage"):
+                        last_usage = res["usage"]
+
+            await self.proc.wait()
+            retcode = self.proc.returncode
+
+            if last_usage:
+                consumo.salvar_consumo_antigravity(
+                    chat_id=self.chat_id,
+                    model=model or "gemini-3.8-flash-high",
+                    usage=last_usage,
+                    duration_s=time.time() - self.turn_started_at,
+                )
+
+            final_text = (response_text or collected_delta).strip()
+            if final_text:
+                self.emit({"kind": "assistant", "text": final_text})
+            elif retcode not in (0, None):
+                stderr_data = await self.proc.stderr.read()
+                err_msg = stderr_data.decode("utf-8", errors="replace").strip()
+                self.emit({"kind": "error", "text": f"Antigravity encerrou com código {retcode}:\n{err_msg or 'Erro desconhecido.'}"})
+        except Exception as e:
+            self.emit({"kind": "error", "text": f"Não consegui executar o Antigravity: {e}"})
+        finally:
+            self.proc = None
+            self.set_status("idle")
+
+    async def interrupt(self) -> None:
+        if self.proc and self.proc.returncode is None:
+            try:
+                self.proc.terminate()
+            except Exception:
+                pass
+            self.emit({"kind": "system", "text": "Resposta interrompida pelo usuário."})
+            self.set_status("idle")
+
+    async def close(self) -> None:
+        if self.proc and self.proc.returncode is None:
+            try:
+                self.proc.terminate()
+            except Exception:
+                pass
+        self.set_status("idle")
+
+    def background_tasks(self) -> list[dict]:
+        return []
+
+
+# =============================================================================================
 # Gerenciador
 # =============================================================================================
 class Manager:
@@ -1203,7 +1359,12 @@ class Manager:
             chat = store.chats.get(chat_id)
             if not chat:
                 raise KeyError(chat_id)
-            session = ClaudeSession(chat) if chat["provider"] == "claude" else CodexSession(chat)
+            if chat["provider"] == "claude":
+                session = ClaudeSession(chat)
+            elif chat["provider"] == "antigravity":
+                session = AntigravitySession(chat)
+            else:
+                session = CodexSession(chat)
             self.sessions[chat_id] = session
         return session
 

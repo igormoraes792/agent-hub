@@ -1,4 +1,4 @@
-"""Descoberta dos motores (Claude Agent SDK e Codex CLI) e dos modelos disponíveis."""
+"""Descoberta dos motores (Google Antigravity, Claude Agent SDK e Codex CLI) e dos modelos disponíveis."""
 from __future__ import annotations
 
 import asyncio
@@ -33,6 +33,24 @@ CODEX_SANDBOX_MODES = [
     {"value": "workspace-write", "label": "Pode editar a pasta do chat"},
     {"value": "danger-full-access", "label": "Acesso total (perigoso)"},
 ]
+
+ANTIGRAVITY_MODELS = [
+    {"value": "gemini-3.8-flash-high", "displayName": "Gemini 3.8 Flash (High)", "description": "Rápido e avançado com alto raciocínio"},
+    {"value": "gemini-3.8-flash-medium", "displayName": "Gemini 3.8 Flash (Medium)", "description": "Equilíbrio de velocidade e raciocínio"},
+    {"value": "gemini-3.8-flash-low", "displayName": "Gemini 3.8 Flash (Low)", "description": "Máxima velocidade para respostas curtas"},
+    {"value": "claude-sonnet-4-6", "displayName": "Claude Sonnet 4.6 (Thinking)", "description": "Modelo avançado Claude com raciocínio"},
+    {"value": "claude-opus-4-6-thinking", "displayName": "Claude Opus 4.6 (Thinking)", "description": "Modelo mais capaz para tarefas complexas"},
+    {"value": "gpt-oss-120b-medium", "displayName": "GPT-OSS 120B (Medium)", "description": "Modelo aberto de alta performance"},
+]
+
+ANTIGRAVITY_PERMISSION_MODES = [
+    {"value": "auto", "label": "Auto (classificador decide)"},
+    {"value": "accept-edits", "label": "Aceitar edições automaticamente"},
+    {"value": "plan", "label": "Modo plano (só planeja)"},
+    {"value": "dangerously-skip-permissions", "label": "Sem perguntar nada (perigoso)"},
+]
+
+ANTIGRAVITY_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"]
 
 # O Claude Code informa estes textos em inglês. O nome técnico do subagente (chave) não muda,
 # porque é por ele que o Claude chama o subagente; só o que aparece na tela é traduzido.
@@ -83,6 +101,25 @@ def _claude_models_pt(models: list[dict]) -> list[dict]:
 
 EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"]
 CODEX_EFFORT_LEVELS = ["minimal", "low", "medium", "high", "xhigh"]
+
+
+def find_antigravity() -> str | None:
+    """Procura o executável do Antigravity CLI (`agy`)."""
+    env = os.environ.get("ANTIGRAVITY_PATH") or os.environ.get("AGY_PATH")
+    if env and Path(env).exists():
+        return env
+    on_path = shutil.which("agy") or shutil.which("agy.exe")
+    if on_path:
+        return on_path
+    candidates = [
+        HOME / ".gemini" / "bin" / "agy.exe",
+        HOME / ".gemini" / "bin" / "agy",
+        HOME / "AppData" / "Local" / "Programs" / "Antigravity" / "bin" / "agy.exe",
+    ]
+    for c in candidates:
+        if c.exists():
+            return str(c)
+    return None
 
 
 def find_codex() -> str | None:
@@ -174,6 +211,7 @@ claude_meta = ClaudeMeta()
 
 def meta() -> dict:
     codex_path = find_codex()
+    agy_path = find_antigravity()
     return {
         "claude": {
             "available": True,
@@ -192,6 +230,14 @@ def meta() -> dict:
             "defaultModel": codex_default_model(),
             "sandboxModes": CODEX_SANDBOX_MODES,
             "effortLevels": CODEX_EFFORT_LEVELS,
+        },
+        "antigravity": {
+            "available": agy_path is not None,
+            "path": agy_path,
+            "models": ANTIGRAVITY_MODELS,
+            "defaultModel": "gemini-3.8-flash-high",
+            "permissionModes": ANTIGRAVITY_PERMISSION_MODES,
+            "effortLevels": ANTIGRAVITY_EFFORT_LEVELS,
         },
         "home": str(HOME),
     }

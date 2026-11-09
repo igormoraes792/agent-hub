@@ -571,10 +571,134 @@ async def atualizar_limites_claude() -> dict | None:
     return limites_claude()
 
 
+ANTIGRAVITY_CONSUMO = store.DATA_DIR / "consumo_antigravity.json"
+
+
+def salvar_consumo_antigravity(chat_id: str, model: str, usage: dict, duration_s: float = 0.0) -> None:
+    """Registra uma execução/turno do Antigravity CLI com tokens e modelo."""
+    if not usage:
+        return
+    agora = time.time()
+    item = {
+        "chat_id": chat_id,
+        "ts": agora,
+        "model": model or "gemini-3.8-flash-high",
+        "in": usage.get("input_tokens") or 0,
+        "out": usage.get("output_tokens") or 0,
+        "thinking": usage.get("thinking_tokens") or 0,
+        "cached": usage.get("cache_read_tokens") or 0,
+        "total": usage.get("total_tokens") or 0,
+        "duration_s": duration_s,
+    }
+    try:
+        ANTIGRAVITY_CONSUMO.parent.mkdir(parents=True, exist_ok=True)
+        items = []
+        if ANTIGRAVITY_CONSUMO.exists():
+            try:
+                items = json.loads(ANTIGRAVITY_CONSUMO.read_text(encoding="utf-8"))
+            except Exception:
+                items = []
+        items.append(item)
+        corte = agora - 30 * 86400
+        items = [x for x in items if x.get("ts", 0) >= corte]
+        tmp = ANTIGRAVITY_CONSUMO.with_suffix(".tmp")
+        tmp.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, ANTIGRAVITY_CONSUMO)
+    except Exception:
+        pass
+
+
+def resumo_antigravity(periodo: str, chats_hub: dict) -> dict:
+    agora = time.time()
+    desde = agora - (86400 if periodo == "dia" else 7 * 86400)
+    items = []
+    if ANTIGRAVITY_CONSUMO.exists():
+        try:
+            items = json.loads(ANTIGRAVITY_CONSUMO.read_text(encoding="utf-8"))
+        except Exception:
+            items = []
+
+    tokens = Counter()
+    por_modelo = Counter()
+    por_sessao = Counter()
+    req_count = 0
+
+    for r in items:
+        if r.get("ts", 0) < desde:
+            continue
+        req_count += 1
+        tin = r.get("in", 0)
+        tout = r.get("out", 0)
+        tth = r.get("thinking", 0)
+        tcached = r.get("cached", 0)
+        tokens["in"] += tin
+        tokens["out"] += tout
+        tokens["thinking"] += tth
+        tokens["cached"] += tcached
+        tokens["total"] += r.get("total", tin + tout)
+        peso = tin + tout * 3
+        m_name = _nome_modelo(r.get("model", "gemini-3.8-flash-high"))
+        por_modelo[m_name] += peso
+        por_sessao[r.get("chat_id", "sem-id")] += peso
+
+    total_peso = sum(por_sessao.values())
+    pct = (lambda v: round(100 * v / total_peso, 1)) if total_peso else (lambda v: 0)
+
+    top_sessoes = []
+    for cid, peso in por_sessao.most_common(10):
+        c = chats_hub.get(cid) or {}
+        top_sessoes.append({
+            "titulo": c.get("title") or "Conversa Antigravity",
+            "chat_id": cid,
+            "origem": "Agent Hub",
+            "pasta": c.get("cwd") or "",
+            "pct": pct(peso),
+        })
+
+    return {
+        "tokens": dict(tokens),
+        "requisicoes": req_count,
+        "sessoes": len(por_sessao),
+        "modelos": [{"nome": m, "pct": pct(v)} for m, v in por_modelo.most_common()],
+        "top_sessoes": top_sessoes,
+    }
+
+
+def limites_antigravity() -> dict:
+    agora = time.time()
+    desde_dia = agora - 86400
+    desde_sem = agora - 7 * 86400
+    items = []
+    if ANTIGRAVITY_CONSUMO.exists():
+        try:
+            items = json.loads(ANTIGRAVITY_CONSUMO.read_text(encoding="utf-8"))
+        except Exception:
+            items = []
+    tok_dia = sum(x.get("total") or (x.get("in", 0) + x.get("out", 0)) for x in items if x.get("ts", 0) >= desde_dia)
+    req_dia = sum(1 for x in items if x.get("ts", 0) >= desde_dia)
+    tok_sem = sum(x.get("total") or (x.get("in", 0) + x.get("out", 0)) for x in items if x.get("ts", 0) >= desde_sem)
+    return {
+        "status": "Conectado",
+        "tokens_hoje": tok_dia,
+        "requisicoes_hoje": req_dia,
+        "tokens_semana": tok_sem,
+        "visto_em": agora,
+    }
+
+
 def resumo(periodo: str) -> dict:
     chats = {c["id"]: c for c in store.chats.all()}
     t0 = time.time()
     claude = resumo_claude(periodo, chats)
     codex = resumo_codex(periodo, chats)
-    return {"periodo": periodo, "gerado_em": time.time(), "duracao_s": round(time.time() - t0, 1),
-            "claude": claude, "codex": codex, "limites_claude": limites_claude()}
+    antigravity = resumo_antigravity(periodo, chats)
+    return {
+        "periodo": periodo,
+        "gerado_em": time.time(),
+        "duracao_s": round(time.time() - t0, 1),
+        "claude": claude,
+        "codex": codex,
+        "antigravity": antigravity,
+        "limites_claude": limites_claude(),
+        "limites_antigravity": limites_antigravity(),
+    }

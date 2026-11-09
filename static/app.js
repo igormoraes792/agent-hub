@@ -7,6 +7,7 @@ const S = {
   agents: [],
   chatId: null,
   view: "start",
+  settingsSection: "geral",
   pending: {},        // chatId -> [request]
   stream: null,       // elemento da resposta em streaming do chat aberto
   toolEls: {},        // toolId -> <details>
@@ -85,13 +86,14 @@ const CODEX_APPROVAL = [
 const EFFORT_LABEL = { minimal: "mínimo", low: "baixo", medium: "médio", high: "alto", xhigh: "muito alto", max: "máximo" };
 
 function modelOptions(provider) {
-  if (provider === "claude") return (S.meta?.claude.models || []).map((m) => ({ value: m.value, label: m.displayName || m.value, title: m.description }));
-  const def = S.meta?.codex.defaultModel;
+  if (provider === "claude") return (S.meta?.claude?.models || []).map((m) => ({ value: m.value, label: m.displayName || m.value, title: m.description }));
+  if (provider === "antigravity") return (S.meta?.antigravity?.models || []).map((m) => ({ value: m.value, label: m.displayName || m.value, title: m.description }));
+  const def = S.meta?.codex?.defaultModel;
   return [{ value: "", label: `Padrão do Codex${def ? ` (${def})` : ""}` },
-    ...(S.meta?.codex.models || []).map((m) => ({ value: m.value, label: m.displayName || m.value }))];
+    ...(S.meta?.codex?.models || []).map((m) => ({ value: m.value, label: m.displayName || m.value }))];
 }
 function effortOptions(provider) {
-  const levels = provider === "claude" ? S.meta?.claude.effortLevels : S.meta?.codex.effortLevels;
+  const levels = provider === "claude" ? S.meta?.claude?.effortLevels : (provider === "antigravity" ? S.meta?.antigravity?.effortLevels : S.meta?.codex?.effortLevels);
   return [{ value: "", label: "Padrão" }, ...(levels || []).map((l) => ({ value: l, label: EFFORT_LABEL[l] || l }))];
 }
 function selectHtml(id, options, value, attrs = "") {
@@ -100,12 +102,15 @@ function selectHtml(id, options, value, attrs = "") {
 }
 /* Campos de modelo/esforço/permissões. `prefix` diferencia os formulários que usam o mesmo bloco. */
 function providerFieldsHtml(prefix, provider, v = {}) {
-  let html = `<label>Modelo ${selectHtml(`${prefix}-model`, modelOptions(provider), v.model ?? (provider === "claude" ? "default" : ""))}</label>
+  const defModel = provider === "claude" ? "default" : (provider === "antigravity" ? "gemini-3.8-flash-high" : "");
+  let html = `<label>Modelo ${selectHtml(`${prefix}-model`, modelOptions(provider), v.model ?? defModel)}</label>
     <label>Esforço de raciocínio ${selectHtml(`${prefix}-effort`, effortOptions(provider), v.effort)}</label>`;
   if (provider === "claude") {
-    html += `<label>Permissões ${selectHtml(`${prefix}-permission_mode`, S.meta.claude.permissionModes, v.permission_mode || "default")}</label>`;
+    html += `<label>Permissões ${selectHtml(`${prefix}-permission_mode`, S.meta?.claude?.permissionModes || [], v.permission_mode || "default")}</label>`;
+  } else if (provider === "antigravity") {
+    html += `<label>Modo de execução ${selectHtml(`${prefix}-permission_mode`, S.meta?.antigravity?.permissionModes || [], v.permission_mode || "auto")}</label>`;
   } else {
-    html += `<label>Sandbox ${selectHtml(`${prefix}-sandbox`, S.meta.codex.sandboxModes, v.sandbox || "workspace-write")}</label>
+    html += `<label>Sandbox ${selectHtml(`${prefix}-sandbox`, S.meta?.codex?.sandboxModes || [], v.sandbox || "workspace-write")}</label>
       <label>Aprovação ${selectHtml(`${prefix}-approval_policy`, CODEX_APPROVAL, v.approval_policy || "on-request")}</label>`;
   }
   return html;
@@ -113,7 +118,7 @@ function providerFieldsHtml(prefix, provider, v = {}) {
 function readProviderFields(prefix, provider) {
   const val = (f) => $(`#${prefix}-${f}`)?.value;
   const out = { model: val("model"), effort: val("effort") };
-  if (provider === "claude") out.permission_mode = val("permission_mode");
+  if (provider === "claude" || provider === "antigravity") out.permission_mode = val("permission_mode");
   else { out.sandbox = val("sandbox"); out.approval_policy = val("approval_policy"); }
   return out;
 }
@@ -121,7 +126,10 @@ function readProviderFields(prefix, provider) {
 /* ------------------------------------------------------------------ navegação */
 function show(view) {
   S.view = view;
-  for (const v of ["chat", "agents", "settings", "import", "start", "consumo"]) $(`#view-${v}`).classList.toggle("hidden", v !== view);
+  for (const v of ["chat", "settings", "import", "start", "consumo"]) {
+    const el = $(`#view-${v}`);
+    if (el) el.classList.toggle("hidden", v !== view);
+  }
   $("#sidebar").classList.remove("open");
   renderChatList();
   renderSideAgents();
@@ -312,8 +320,9 @@ function chatSettingsSummary(c) {
   const find = (list, v) => (list || []).find((o) => String(o.value) === String(v ?? ""))?.label;
   const parts = [find(modelOptions(c.provider), c.model) || c.model || "modelo padrão"];
   if (c.effort) parts.push(`esforço ${EFFORT_LABEL[c.effort] || c.effort}`);
-  if (c.provider === "claude") parts.push(find(S.meta.claude.permissionModes, c.permission_mode) || c.permission_mode);
-  else parts.push(find(S.meta.codex.sandboxModes, c.sandbox) || c.sandbox, find(CODEX_APPROVAL, c.approval_policy) || c.approval_policy);
+  if (c.provider === "claude") parts.push(find(S.meta?.claude?.permissionModes, c.permission_mode) || c.permission_mode);
+  else if (c.provider === "antigravity") parts.push(find(S.meta?.antigravity?.permissionModes, c.permission_mode) || c.permission_mode);
+  else parts.push(find(S.meta?.codex?.sandboxModes, c.sandbox) || c.sandbox, find(CODEX_APPROVAL, c.approval_policy) || c.approval_policy);
   return parts.filter(Boolean).join(" · ");
 }
 
@@ -900,7 +909,8 @@ function openStart(agentId = null, provider = null) {
   if (agentId && !agent) { toast("Agente não encontrado."); location.hash = "#/"; return; }
   guardarRascunho();
   S.chatId = null;
-  S.start = { agentId: agent?.id || null, provider: agent?.provider || provider || "claude" };
+  const defProvider = agent?.provider || provider || localStorageGet("lastProvider") || "antigravity";
+  S.start = { agentId: agent?.id || null, provider: defProvider };
   show("start");
   renderStart();
   $("#start-input").focus();
@@ -921,7 +931,7 @@ function renderStart() {
   $("#start-title").textContent = agent ? agent.name : "";
   $("#start-edit-agent").classList.toggle("hidden", !agent);
   $("#view-start").classList.toggle("hero", !agent);  // chat livre: saudação e caixa de mensagem no centro
-  const cwd = agent?.cwd || localStorageGet("lastCwd") || S.meta.home;
+  const cwd = agent?.cwd || localStorageGet("lastCwd") || S.meta?.home || "";
   const body = $("#start-body");
   const opts = $("#start-opts");
   if (agent) {
@@ -933,22 +943,36 @@ function renderStart() {
     enhanceCode(body);
     opts.innerHTML = "";
   } else {
-    body.innerHTML = `<div class="hero-box"><span class="logo hero-logo">A</span><h1 class="hero-title">${saudacao()}</h1></div>`;
+    const hasAnyConnected = (S.accounts || []).some((a) => a.status === "connected");
+    const emptyBanner = (!hasAnyConnected && (S.accounts || []).length > 0)
+      ? `<div class="empty-start-banner">
+          <div class="empty-start-icon">💡</div>
+          <div class="empty-start-info">
+            <b>Nenhuma IA conectada no momento</b>
+            <div>Conecte o Google Antigravity, Claude ou Codex para começar a conversar e criar agentes.</div>
+          </div>
+          <button type="button" class="btn primary btn-sm" id="btn-start-add-ai">➕ Adicionar IA</button>
+        </div>`
+      : "";
+    body.innerHTML = `${emptyBanner}<div class="hero-box"><span class="logo hero-logo">A</span><h1 class="hero-title">${saudacao()}</h1></div>`;
     opts.innerHTML = `
       <div class="opts-row">
         <div class="seg seg-sm" id="start-provider">
+          <button type="button" data-p="antigravity" class="${provider === "antigravity" ? "on" : ""}">Antigravity</button>
           <button type="button" data-p="claude" class="${provider === "claude" ? "on" : ""}">Claude</button>
           <button type="button" data-p="codex" class="${provider === "codex" ? "on" : ""}">Codex</button>
         </div>
         <details class="opts"><summary>Modelo, permissões e pasta</summary>
-          ${provider === "codex" && !S.meta.codex.available ? `<div class="err-box">codex.exe não encontrado. Instale a extensão do Codex no VS Code ou defina CODEX_PATH.</div>` : ""}
-          <div class="grid2">${providerFieldsHtml("ds", provider, provider === "claude" ? PADRAO_CHAT_CLAUDE : {})}</div>
+          ${provider === "antigravity" && !S.meta?.antigravity?.available ? `<div class="err-box">agy.exe não encontrado. Instale o Google Antigravity ou defina AGY_PATH.</div>` : ""}
+          ${provider === "codex" && !S.meta?.codex?.available ? `<div class="err-box">codex.exe não encontrado. Instale a extensão do Codex no VS Code ou defina CODEX_PATH.</div>` : ""}
+          <div class="grid2">${providerFieldsHtml("ds", provider, provider === "claude" ? PADRAO_CHAT_CLAUDE : (provider === "antigravity" ? { model: "gemini-3.8-flash-high", effort: "high" } : {}))}</div>
           <label>Pasta de trabalho ${folderFieldHtml("ds-cwd", cwd)}</label>
           <div class="hint">A pasta não pode ser trocada depois da primeira mensagem. Dica: para instruções e configurações salvas, escolha um agente na barra lateral.</div>
         </details>
       </div>`;
     bindFolderButtons(opts, "Pasta de trabalho desta conversa");
     $$("select", opts).forEach((s) => s.addEventListener("change", atualizarInfoStart));
+    if ($("#btn-start-add-ai")) $("#btn-start-add-ai").onclick = () => openAddAiModal();
   }
   $$("#start-provider button").forEach((b) => (b.onclick = () => {
     S.start.provider = b.dataset.p;
@@ -976,7 +1000,8 @@ function atualizarInfoStart() {
   const valor = agent ? (agent.model ?? "") : ($("#ds-model")?.value ?? "");
   const nome = modelOptions(provider).find((m) => String(m.value) === String(valor))?.label || valor || "padrão";
   const esforco = agent ? agent.effort : $("#ds-effort")?.value;
-  $("#start-info").textContent = `${provider === "claude" ? "Claude" : "Codex"} · ${nome}${esforco ? ` · ${EFFORT_LABEL[esforco] || esforco}` : ""}`;
+  const provNome = provider === "claude" ? "Claude" : (provider === "antigravity" ? "Antigravity" : "Codex");
+  $("#start-info").textContent = `${provNome} · ${nome}${esforco ? ` · ${EFFORT_LABEL[esforco] || esforco}` : ""}`;
 }
 
 async function startSend() {
@@ -1081,13 +1106,14 @@ function editAgent(id, draft = null) {
   const p = a.provider;
   const outros = S.agents.filter((x) => x.provider === p && x.id !== id);  // subagentes: mesma IA
   const listaSub = `<label>Subagentes que ele pode chamar</label>
-    <div class="checks">${outros.length ? outros.map((s) => `<label><input type="checkbox" class="ag-sub" value="${s.id}" ${(a.subagents || []).includes(s.id) ? "checked" : ""}> ${esc(s.name)}</label>`).join("") : `<span class="muted small">Crie outros agentes ${p === "claude" ? "Claude" : "Codex"} para usá-los como subagentes.</span>`}</div>`;
+    <div class="checks">${outros.length ? outros.map((s) => `<label><input type="checkbox" class="ag-sub" value="${s.id}" ${(a.subagents || []).includes(s.id) ? "checked" : ""}> ${esc(s.name)}</label>`).join("") : `<span class="muted small">Crie outros agentes ${p === "claude" ? "Claude" : (p === "antigravity" ? "Antigravity" : "Codex")} para usá-los como subagentes.</span>`}</div>`;
   form.innerHTML = `
     <h2>${id ? "Editar agente" : "Novo agente"}</h2>
     <div class="grid2">
       <label>Nome <input class="input" id="ag-name" value="${esc(a.name)}" required></label>
       <label>IA
         <div class="seg" id="ag-provider" style="display:flex">
+          <button type="button" data-p="antigravity" class="${p === "antigravity" ? "on" : ""}">Antigravity</button>
           <button type="button" data-p="claude" class="${p === "claude" ? "on" : ""}">Claude</button>
           <button type="button" data-p="codex" class="${p === "codex" ? "on" : ""}">Codex</button>
         </div>
@@ -1099,7 +1125,7 @@ function editAgent(id, draft = null) {
     <label>Instruções do agente
       <textarea id="ag-prompt" placeholder="Ex.: Você é um analista de BI da Herval. Sempre consulte o Superset antes de responder…">${esc(a.prompt || "")}</textarea>
     </label>
-    <div class="hint">${p === "claude" ? "Somadas ao prompt padrão do Claude Code (ele continua com ferramentas, skills, MCP e CLAUDE.md)." : "Enviadas como developer instructions do Codex (somam-se ao AGENTS.md e ao config.toml)."}</div>
+    <div class="hint">${p === "claude" ? "Somadas ao prompt padrão do Claude Code (ele continua com ferramentas, skills, MCP e CLAUDE.md)." : (p === "antigravity" ? "Instruções do agente para o Antigravity / Gemini CLI." : "Enviadas como developer instructions do Codex (somam-se ao AGENTS.md e ao config.toml).")}</div>
     <label>Mensagem de boas-vindas
       <textarea id="ag-welcome" class="welcome" placeholder="${esc(agentGreeting({ name: a.name || "nome do agente", description: a.description }))}">${esc(a.welcome || "")}</textarea>
     </label>
@@ -1212,13 +1238,21 @@ function renderImportList() {
   }
 }
 
-/* ------------------------------------------------------------------ ambiente */
+/* ------------------------------------------------------------------ configurações */
 function updateMcpAlert() {
   const n = S.meta?.mcpIssues || 0;
   const badge = $("#mcp-alert");
-  badge.textContent = n ? `⚠ ${n}` : "";
-  badge.classList.toggle("hidden", !n);
-  badge.title = n ? `${n} servidor(es) MCP com problema` : "";
+  if (badge) {
+    badge.textContent = n ? `⚠ ${n}` : "";
+    badge.classList.toggle("hidden", !n);
+    badge.title = n ? `${n} servidor(es) MCP com problema` : "";
+  }
+  const tabBadge = $("#st-mcp-badge");
+  if (tabBadge) {
+    tabBadge.textContent = n ? `⚠ ${n}` : "";
+    tabBadge.classList.toggle("hidden", !n);
+    tabBadge.title = n ? `${n} servidor(es) MCP com problema` : "";
+  }
 }
 
 async function renderMcpCard() {
@@ -1260,9 +1294,7 @@ async function reiniciarServidor() {
   try { r = await api("POST", "/api/servidor/reiniciar", {}); }
   catch (e) {
     if (!/trabalhando/.test(e.message)) { toast(e.message); return; }
-    if (!confirm(`${e.message}
-
-Reiniciar mesmo assim?`)) return;
+    if (!confirm(`${e.message}\n\nReiniciar mesmo assim?`)) return;
     try { r = await api("POST", "/api/servidor/reiniciar", { forcar: true }); } catch (e2) { toast(e2.message); return; }
   }
   S.reiniciando = true;
@@ -1285,65 +1317,727 @@ Reiniciar mesmo assim?`)) return;
   setTimeout(checar, 1200);
 }
 
-async function renderSettings() {
-  const m = S.meta;
-  const body = $("#settings-body");
-  body.innerHTML = `
-    <div class="card"><h3>Agent Hub</h3>
-      <div>Servidor ligado <b id="st-inicio">…</b></div>
-      <div class="hint">Depois de uma atualização do Agent Hub, reinicie por aqui: o servidor liga de novo já com as mudanças e
-        esta tela recarrega sozinha, sem precisar fechar a janela. Conversas que estiverem trabalhando são interrompidas (você é avisado antes).</div>
-      <div class="row gap" style="margin-top:10px"><button class="btn" id="st-reiniciar">↻ Reiniciar o Agent Hub</button></div>
-    </div>
-    <div class="card"><h3><span class="badge claude">Claude</span> Claude Agent SDK</h3>
-      <div>Versão do Claude Code: <b>${esc(m.claude.version || "consultando…")}</b></div>
-      ${m.claude.error ? `<div class="err-box" style="margin-top:8px">${esc(m.claude.error)}</div>` : ""}
-      <div class="hint">Usa o login que você já tem no Claude Code (~/.claude). Carrega CLAUDE.md, skills, subagentes, hooks e servidores MCP das suas configurações.</div>
-      <div class="hint">${m.claude.models.length} modelos · ${m.claude.commands.length} comandos/skills · ${m.claude.agents.length} subagentes</div>
-      <div class="row gap" style="margin-top:10px"><button class="btn" id="st-refresh">↻ Recarregar modelos, comandos e subagentes</button></div>
-    </div>
-    <div class="card"><h3><span class="badge codex">Codex</span> Codex app-server</h3>
-      ${m.codex.available ? `<div class="kv">${esc(m.codex.path)}</div>` : `<div class="err-box">codex.exe não encontrado.</div>`}
-      <div class="hint">Usa o login do Codex (~/.codex/auth.json), o config.toml (modelo padrão, MCP) e o AGENTS.md.</div>
-      <div style="margin-top:10px">Sandbox do Windows: <b id="st-sbx">verificando…</b></div>
-      <div class="hint">Sem o sandbox configurado, o Codex não consegue rodar comandos nos modos "Somente leitura" e "Pode editar a pasta do chat". A configuração é feita pelo próprio Codex. O modo "elevado" pede permissão de administrador (UAC).</div>
-      <div class="row gap" style="margin-top:8px">
-        <button class="btn" id="st-sbx-unelev">Configurar sandbox (sem admin)</button>
-        <button class="btn" id="st-sbx-elev">Configurar sandbox (elevado)</button>
+function openAddAiModal() {
+  const modal = $("#modal-add-ai");
+  if (!modal) return;
+  modal.classList.remove("hidden");
+  const ag = (S.accounts || []).find((a) => a.id === "antigravity");
+  const cl = (S.accounts || []).find((a) => a.id === "claude");
+  const cx = (S.accounts || []).find((a) => a.id === "codex");
+  const badgeHtml = (acc) => {
+    if (acc?.status === "connected") return `<span class="badge-status ok">🟢 Conectado</span>`;
+    return `<span class="badge-status dis">⚪ Não configurado</span>`;
+  };
+  if ($("#cat-badge-antigravity")) $("#cat-badge-antigravity").innerHTML = badgeHtml(ag);
+  if ($("#cat-badge-claude")) $("#cat-badge-claude").innerHTML = badgeHtml(cl);
+  if ($("#cat-badge-codex")) $("#cat-badge-codex").innerHTML = badgeHtml(cx);
+}
+
+function closeAddAiModal() {
+  const modal = $("#modal-add-ai");
+  if (modal) modal.classList.add("hidden");
+}
+
+async function renderContas() {
+  const container = $("#sec-contas");
+  if (!container) return;
+  container.innerHTML = `<div class="muted small" style="padding:10px 0">Carregando contas de IA…</div>`;
+  let accountsData = [];
+  try {
+    const res = await api("GET", "/api/accounts");
+    accountsData = res.accounts || [];
+    S.accounts = accountsData;
+  } catch (e) {
+    container.innerHTML = `<div class="err-box">Erro ao consultar contas: ${esc(e.message)}</div>`;
+    return;
+  }
+
+  const antigravity = accountsData.find((a) => a.id === "antigravity") || {};
+  const claude = accountsData.find((a) => a.id === "claude") || {};
+  const codex = accountsData.find((a) => a.id === "codex") || {};
+  const hasAnyConnected = accountsData.some((a) => a.status === "connected");
+
+  const statusBadge = (st) => {
+    if (st === "connected") return `<span class="badge-status ok">🟢 Conectado</span>`;
+    if (st === "error") return `<span class="badge-status err">⚠️ Erro na conexão</span>`;
+    return `<span class="badge-status dis">⚪ Não configurado</span>`;
+  };
+
+  const renderAntigravityProfiles = () => {
+    const list = antigravity.profiles || [];
+    if (!list.length) return "";
+    return `
+      <div class="account-profiles-box">
+        <label style="font-weight:600;font-size:13px;display:block;margin-bottom:4px">Perfis e Contas Salvas:</label>
+        ${list.map((p) => `
+          <div class="account-profile-item ${p.active ? 'active' : ''}">
+            <div class="account-profile-name">
+              <span>👤 <b>${esc(p.label || p.email || p.id)}</b></span>
+              ${p.active ? '<span class="badge-active">Ativa</span>' : ''}
+            </div>
+            <div class="row gap align-center">
+              ${!p.active ? `<button type="button" class="btn btn-sm btn-ag-switch" data-id="${esc(p.id)}">Usar esta conta</button>` : ''}
+              ${list.length > 1 ? `<button type="button" class="btn ghost icon btn-ag-del-prof" data-id="${esc(p.id)}" title="Remover perfil salvo">🗑</button>` : ''}
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  };
+
+  const renderCodexProfiles = () => {
+    const list = codex.profiles || [];
+    if (!list.length) return "";
+    return `
+      <div class="account-profiles-box">
+        <label style="font-weight:600;font-size:13px;display:block;margin-bottom:4px">Perfis e Contas Salvas:</label>
+        ${list.map((p) => `
+          <div class="account-profile-item ${p.active ? 'active' : ''}">
+            <div class="account-profile-name">
+              <span>👤 <b>${esc(p.label || p.email || p.id)}</b></span>
+              ${p.active ? '<span class="badge-active">Ativa</span>' : ''}
+            </div>
+            <div class="row gap align-center">
+              ${!p.active ? `<button type="button" class="btn btn-sm btn-codex-switch" data-id="${esc(p.id)}">Usar esta conta</button>` : ''}
+              ${list.length > 1 ? `<button type="button" class="btn ghost icon btn-codex-del-prof" data-id="${esc(p.id)}" title="Remover perfil salvo">🗑</button>` : ''}
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  };
+
+  const renderClaudeProfiles = () => {
+    const list = claude.profiles || [];
+    if (!list.length) return "";
+    return `
+      <div class="account-profiles-box">
+        <label style="font-weight:600;font-size:13px;display:block;margin-bottom:4px">Chaves de API Salvas:</label>
+        ${list.map((p) => `
+          <div class="account-profile-item ${claude.has_custom_key && claude.masked_key === p.masked_key ? 'active' : ''}">
+            <div class="account-profile-name">
+              <span>🔑 <b>${esc(p.label)}</b></span>
+              ${claude.has_custom_key && claude.masked_key === p.masked_key ? '<span class="badge-active">Ativa</span>' : ''}
+            </div>
+            <div class="row gap align-center">
+              ${!(claude.has_custom_key && claude.masked_key === p.masked_key) ? `<button type="button" class="btn btn-sm btn-claude-switch" data-id="${esc(p.id)}">Ativar chave</button>` : ''}
+              <button type="button" class="btn ghost icon btn-claude-del-prof" data-id="${esc(p.id)}" title="Remover chave salva">🗑</button>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  };
+
+  container.innerHTML = `
+    <div class="card" style="margin-bottom:16px">
+      <div class="row align-center gap" style="justify-content:space-between;flex-wrap:wrap">
+        <div>
+          <h3>Gestão de Contas de IA</h3>
+          <div class="hint" style="margin-top:2px;font-size:13px">
+            Aqui você pode gerenciar, conectar, trocar e alternar entre suas contas de IA <b>diretamente pelo Agent Hub</b>, sem precisar abrir o VS Code.
+          </div>
+        </div>
+        <button type="button" class="btn primary" id="btn-open-add-ai">➕ Adicionar IA</button>
       </div>
     </div>
-    <div class="card"><h3>Servidores MCP</h3>
-      <div class="hint">Os mesmos que o Claude Code e o Codex usam no VS Code. MCPs que rodam de dentro de uma extensão do VS Code (como o Power BI) têm a versão da extensão no caminho: quando ela atualiza, aparece aqui como desatualizado ou quebrado, com o botão <b>Corrigir</b>. A correção faz backup do arquivo antes.</div>
-      <div id="mcp-card-body"><div class="muted small" style="margin-top:8px">Verificando…</div></div>
-      <div class="row gap" style="margin-top:10px"><button class="btn" id="st-mcp-recheck">↻ Verificar novamente</button></div>
+
+    ${!hasAnyConnected ? `
+      <div class="onboarding-card">
+        <div class="onboarding-icon">🚀</div>
+        <div class="onboarding-content">
+          <h3>Bem-vindo ao Agent Hub!</h3>
+          <p>Nenhuma IA está conectada ainda. Conecte sua primeira IA (Google Antigravity, Claude ou Codex) para começar a conversar e criar agentes personalizados.</p>
+          <button type="button" class="btn primary lg" id="btn-onboarding-add-ai">➕ Conectar Minha Primeira IA</button>
+        </div>
+      </div>
+    ` : ''}
+
+    <!-- Card Antigravity -->
+    <div class="card account-card">
+      <div class="account-card-header">
+        <div class="account-card-title">
+          <span class="badge antigravity">Google Antigravity</span>
+          <div>
+            <b>${esc(antigravity.titulo || "Google Antigravity / Gemini CLI")}</b>
+            <div class="small muted">Google</div>
+          </div>
+        </div>
+        <div>${statusBadge(antigravity.status)}</div>
+      </div>
+
+      <div class="account-details-grid">
+        ${antigravity.email ? `
+        <div class="account-kv-item highlight">
+          <span class="k">Conta Google Ativa:</span>
+          <span class="v"><b>${esc(antigravity.email)}</b></span>
+        </div>` : ""}
+        <div class="account-kv-item">
+          <span class="k">Autenticação:</span>
+          <span class="v">${antigravity.has_custom_key ? "🔑 Chave de API GEMINI_API_KEY" : (antigravity.status === 'connected' ? "🌐 Conta Google / Gemini CLI" : "Não configurado")}</span>
+        </div>
+        <div class="account-kv-item">
+          <span class="k">Executável CLI:</span>
+          <span class="v">${antigravity.available ? `<code class="small">${esc(antigravity.path || "agy.exe")}</code>` : `<span class="err-inline">agy.exe não encontrado</span>`}</span>
+        </div>
+        <div class="account-kv-item">
+          <span class="k">Modelos e Recursos:</span>
+          <span class="v">${antigravity.models_count ? `${antigravity.models_count} modelos (Gemini 3.8 Flash, Claude Sonnet 4.6 Thinking, GPT-OSS)` : "Gemini 3.8 Flash, Claude Sonnet"} · ferramentas e raciocínio profundo</span>
+        </div>
+        <div class="account-kv-item">
+          <span class="k">Pasta de configuração:</span>
+          <span class="v"><code class="small">${esc(antigravity.config_path || "~/.gemini")}</code></span>
+        </div>
+      </div>
+
+      ${renderAntigravityProfiles()}
+
+      <!-- Chave API Gemini Customizada -->
+      <div class="account-key-box">
+        <div class="row align-center gap">
+          <label style="margin:0;font-size:13px;font-weight:600">Usar Chave de API Google / Gemini (GEMINI_API_KEY):</label>
+          <span class="small muted" style="margin-left:auto">${antigravity.has_custom_key ? `Ativa: <code>${esc(antigravity.masked_key)}</code>` : "Opcional"}</span>
+        </div>
+        <div class="row gap" style="margin-top:6px">
+          <input type="password" id="ag-api-key" class="input flex-1" placeholder="${antigravity.has_custom_key ? 'Substituir chave...' : 'AIzaSy... (salvar chave GEMINI_API_KEY)'}" autocomplete="off">
+          <input type="text" id="ag-key-label" class="input" style="width:140px" placeholder="Rótulo (opcional)" autocomplete="off">
+          <button type="button" class="btn" id="ag-save-key">Salvar chave</button>
+          ${antigravity.has_custom_key ? `<button type="button" class="btn ghost" id="ag-remove-key" title="Desativar chave">Remover</button>` : ""}
+        </div>
+      </div>
+
+      <div class="account-actions-row">
+        <div class="account-actions-left">
+          <button type="button" class="btn primary" id="ag-btn-login" title="Conectar ou trocar de conta Google">${antigravity.status === 'connected' ? '🔑 Trocar conta' : '🔑 Conectar conta Google'}</button>
+          ${antigravity.status === 'connected' ? `<button type="button" class="btn ghost" id="ag-btn-logout">🚪 Desconectar</button>` : ''}
+          <button type="button" class="btn" id="ag-btn-refresh">↻ Recarregar</button>
+        </div>
+        <div class="account-actions-right">
+          <a href="#/consumo" class="btn ghost btn-consumo-link">📊 Ver consumo do Antigravity</a>
+        </div>
+      </div>
     </div>
-    <div class="card"><h3>Aparência</h3>
-      <label>Tema</label>
-      <div class="seg" id="st-theme"><button data-t="">Sistema</button><button data-t="light">Claro</button><button data-t="dark">Escuro</button></div>
-      <label>Fonte das respostas</label>
-      <div class="seg" id="st-fonte"><button data-f="">Estilo Claude (serifada)</button><button data-f="sans">Sem serifa</button></div>
-    </div>`;
-  api("GET", "/api/servidor").then((i) => { const el = $("#st-inicio"); if (el) el.textContent = fmtQuando(i.inicio); }).catch(() => {});
-  $("#st-reiniciar").onclick = reiniciarServidor;
-  $("#st-refresh").onclick = async () => { await api("POST", "/api/meta/refresh"); toast("Consultando o Claude… (alguns segundos)"); setTimeout(async () => { await loadMeta(); renderSettings(); }, 8000); };
-  const theme = localStorageGet("theme") || "";
-  $$("#st-theme button").forEach((b) => { b.classList.toggle("on", b.dataset.t === theme); b.onclick = () => { setTheme(b.dataset.t); renderSettings(); }; });
-  const fonte = localStorageGet("fonte") || "";
-  $$("#st-fonte button").forEach((b) => { b.classList.toggle("on", b.dataset.f === fonte); b.onclick = () => { setFonte(b.dataset.f); renderSettings(); }; });
-  const setup = async (mode) => {
+
+    <!-- Card Claude -->
+    <div class="card account-card">
+      <div class="account-card-header">
+        <div class="account-card-title">
+          <span class="badge claude">Claude</span>
+          <div>
+            <b>${esc(claude.titulo || "Claude Code & Agent SDK")}</b>
+            <div class="small muted">Anthropic</div>
+          </div>
+        </div>
+        <div>${statusBadge(claude.status)}</div>
+      </div>
+
+      <div class="account-details-grid">
+        <div class="account-kv-item">
+          <span class="k">Autenticação ativa:</span>
+          <span class="v">${claude.has_custom_key ? "🔑 Chave de API personalizada" : (claude.status === 'connected' ? "💻 Login do terminal (OAuth Anthropic)" : "Desconectado")}</span>
+        </div>
+        <div class="account-kv-item">
+          <span class="k">Versão do Claude:</span>
+          <span class="v"><b>${esc(claude.version || "consultando…")}</b></span>
+        </div>
+        ${claude.user_id ? `
+        <div class="account-kv-item">
+          <span class="k">Identificador da instalação:</span>
+          <span class="v"><code class="small">${esc(claude.user_id.slice(0, 20))}…</code></span>
+        </div>` : ""}
+        <div class="account-kv-item">
+          <span class="k">Modelos e Recursos:</span>
+          <span class="v">${claude.models_count ? `${claude.models_count} modelos disponíveis` : "Sonnet, Opus, Haiku"} · subagentes e MCPs</span>
+        </div>
+        <div class="account-kv-item">
+          <span class="k">Pasta de configuração:</span>
+          <span class="v"><code class="small">${esc(claude.config_path || "~/.claude")}</code></span>
+        </div>
+      </div>
+
+      ${claude.error ? `<div class="err-box" style="margin-top:10px">${esc(claude.error)}</div>` : ""}
+
+      ${renderClaudeProfiles()}
+
+      <!-- Chave API Customizada -->
+      <div class="account-key-box">
+        <div class="row align-center gap">
+          <label style="margin:0;font-size:13px;font-weight:600">Usar Chave de API Anthropic:</label>
+          <span class="small muted" style="margin-left:auto">${claude.has_custom_key ? `Ativa: <code>${esc(claude.masked_key)}</code>` : "Opcional"}</span>
+        </div>
+        <div class="row gap" style="margin-top:6px">
+          <input type="password" id="claude-api-key" class="input flex-1" placeholder="${claude.has_custom_key ? 'Substituir chave...' : 'sk-ant-api03-... (salvar chave de API)'}" autocomplete="off">
+          <input type="text" id="claude-key-label" class="input" style="width:140px" placeholder="Rótulo (opcional)" autocomplete="off">
+          <button type="button" class="btn" id="claude-save-key">Salvar chave</button>
+          ${claude.has_custom_key ? `<button type="button" class="btn ghost" id="claude-remove-key" title="Desativar chave e voltar ao login de terminal">Remover</button>` : ""}
+        </div>
+      </div>
+
+      <div class="account-actions-row">
+        <div class="account-actions-left">
+          <button type="button" class="btn primary" id="claude-btn-login" title="Login no navegador para conectar ou trocar de conta">${claude.status === 'connected' ? '🔑 Trocar conta' : '🔑 Conectar conta (Login no Navegador)'}</button>
+          ${claude.status === 'connected' ? `<button type="button" class="btn ghost" id="claude-btn-logout">🚪 Desconectar</button>` : ''}
+          <button type="button" class="btn" id="claude-btn-refresh">↻ Recarregar</button>
+        </div>
+        <div class="account-actions-right">
+          <a href="#/consumo" class="btn ghost btn-consumo-link">📊 Ver consumo do Claude</a>
+        </div>
+      </div>
+    </div>
+
+    <!-- Card Codex -->
+    <div class="card account-card">
+      <div class="account-card-header">
+        <div class="account-card-title">
+          <span class="badge codex">Codex</span>
+          <div>
+            <b>${esc(codex.titulo || "Codex app-server")}</b>
+            <div class="small muted">OpenAI / ChatGPT</div>
+          </div>
+        </div>
+        <div>${statusBadge(codex.status)}</div>
+      </div>
+
+      <div class="account-details-grid">
+        ${codex.email ? `
+        <div class="account-kv-item highlight">
+          <span class="k">Conta Ativa:</span>
+          <span class="v"><b>${esc(codex.user_name || "")}</b> <span class="muted">(${esc(codex.email)})</span></span>
+        </div>` : ""}
+        <div class="account-kv-item">
+          <span class="k">Modo de Autenticação:</span>
+          <span class="v">${codex.has_custom_key ? "🔑 Chave de API OpenAI" : (codex.auth_mode === "chatgpt" ? "🌐 ChatGPT (Assinatura / OAuth)" : esc(codex.auth_mode || "Não detectado"))}</span>
+        </div>
+        <div class="account-kv-item">
+          <span class="k">Executável:</span>
+          <span class="v">${codex.available ? `<code class="small">${esc(codex.path || "codex.exe")}</code>` : `<span class="err-inline">codex.exe não encontrado</span>`}</span>
+        </div>
+        ${codex.default_model ? `
+        <div class="account-kv-item">
+          <span class="k">Modelo Padrão:</span>
+          <span class="v"><code>${esc(codex.default_model)}</code></span>
+        </div>` : ""}
+        <div class="account-kv-item">
+          <span class="k">Sandbox do Windows:</span>
+          <span class="v" id="st-sbx-status">verificando…</span>
+        </div>
+        <div class="account-kv-item">
+          <span class="k">Pasta de configuração:</span>
+          <span class="v"><code class="small">${esc(codex.config_path || "~/.codex")}</code></span>
+        </div>
+      </div>
+
+      ${renderCodexProfiles()}
+
+      <!-- Chave API Customizada -->
+      <div class="account-key-box">
+        <div class="row align-center gap">
+          <label style="margin:0;font-size:13px;font-weight:600">Usar Chave de API OpenAI:</label>
+          <span class="small muted" style="margin-left:auto">${codex.has_custom_key ? `Ativa: <code>${esc(codex.masked_key)}</code>` : "Opcional"}</span>
+        </div>
+        <div class="row gap" style="margin-top:6px">
+          <input type="password" id="codex-api-key" class="input flex-1" placeholder="${codex.has_custom_key ? 'Substituir chave...' : 'sk-proj-... (salvar chave de API)'}" autocomplete="off">
+          <input type="text" id="codex-key-label" class="input" style="width:140px" placeholder="Rótulo (opcional)" autocomplete="off">
+          <button type="button" class="btn" id="codex-save-key">Salvar chave</button>
+          ${codex.has_custom_key ? `<button type="button" class="btn ghost" id="codex-remove-key" title="Desativar chave e voltar ao login ChatGPT">Remover</button>` : ""}
+        </div>
+      </div>
+
+      <div class="card-inner-section">
+        <div class="small muted"><b>Sandbox do Windows (Codex):</b> Necessário para rodar comandos nos modos somente leitura ou pasta do chat.</div>
+        <div class="row gap" style="margin-top:6px">
+          <button type="button" class="btn" id="st-sbx-unelev">Configurar sandbox (sem admin)</button>
+          <button type="button" class="btn" id="st-sbx-elev">Configurar sandbox (elevado)</button>
+        </div>
+      </div>
+
+      <div class="account-actions-row">
+        <div class="account-actions-left">
+          <button type="button" class="btn primary" id="codex-btn-login" title="Login no navegador para conectar ou trocar de conta">${codex.status === 'connected' ? '🔑 Trocar conta' : '🔑 Conectar conta (Login no Navegador)'}</button>
+          ${codex.status === 'connected' ? `<button type="button" class="btn ghost" id="codex-btn-logout">🚪 Desconectar</button>` : ''}
+          <button type="button" class="btn" id="codex-btn-refresh">↻ Recarregar</button>
+        </div>
+        <div class="account-actions-right">
+          <a href="#/consumo" class="btn ghost btn-consumo-link">📊 Ver consumo do Codex</a>
+        </div>
+      </div>
+    </div>
+  `;
+
+  // Função auxiliar de monitoramento após iniciar login
+  const monitorarLogin = (provider, nomeProvedor) => {
+    toast(`Iniciamos o login do ${nomeProvedor}. Conclua a autorização no navegador aberto...`, 15000);
+    let tentativas = 0;
+    const interval = setInterval(async () => {
+      tentativas++;
+      try {
+        const check = await api("GET", "/api/accounts");
+        const acc = check.accounts.find((a) => a.id === provider);
+        if (acc && acc.status === "connected") {
+          clearInterval(interval);
+          toast(`✅ ${nomeProvedor} conectado com sucesso!`, 6000);
+          renderContas();
+        }
+      } catch { /* aguardando */ }
+      if (tentativas > 45) clearInterval(interval);
+    }, 2500);
+  };
+
+  // Botões de Adicionar IA (+ Adicionar IA)
+  if ($("#btn-open-add-ai")) $("#btn-open-add-ai").onclick = () => openAddAiModal();
+  if ($("#btn-onboarding-add-ai")) $("#btn-onboarding-add-ai").onclick = () => openAddAiModal();
+  if ($("#modal-add-ai-close")) $("#modal-add-ai-close").onclick = () => closeAddAiModal();
+  const modalBackdrop = $("#modal-add-ai");
+  if (modalBackdrop) {
+    modalBackdrop.onclick = (e) => { if (e.target === modalBackdrop) closeAddAiModal(); };
+  }
+
+  // Ações dentro do modal do Catálogo de IAs
+  $$(".btn-cat-connect").forEach((btn) => {
+    btn.onclick = async () => {
+      const p = btn.dataset.p;
+      closeAddAiModal();
+      if (p === "antigravity") {
+        try {
+          await api("POST", "/api/accounts/login", { provider: "antigravity" });
+          toast("Google Antigravity aberto.");
+        } catch (e) { toast(e.message); }
+      } else if (p === "claude") {
+        try {
+          await api("POST", "/api/accounts/login", { provider: "claude" });
+          monitorarLogin("claude", "Claude");
+        } catch (e) { toast(e.message); }
+      } else if (p === "codex") {
+        try {
+          await api("POST", "/api/accounts/login", { provider: "codex" });
+          monitorarLogin("codex", "Codex");
+        } catch (e) { toast(e.message); }
+      }
+    };
+  });
+
+  $$(".btn-cat-key").forEach((btn) => {
+    btn.onclick = async () => {
+      const p = btn.dataset.p;
+      const promptTitle = p === "antigravity"
+        ? "Digite a chave do Google Gemini (GEMINI_API_KEY):"
+        : (p === "claude" ? "Digite a chave da Anthropic (sk-ant-...):" : "Digite a chave da OpenAI (sk-proj-...):");
+      const key = prompt(promptTitle);
+      if (key && key.trim()) {
+        try {
+          await api("POST", "/api/accounts/key", { provider: p, key: key.trim() });
+          closeAddAiModal();
+          toast("Chave de API salva com sucesso!");
+          await renderContas();
+        } catch (e) { toast(e.message); }
+      }
+    };
+  });
+
+  // Antigravity Binds
+  if ($("#ag-btn-login")) {
+    $("#ag-btn-login").onclick = async () => {
+      try {
+        await api("POST", "/api/accounts/login", { provider: "antigravity" });
+        toast("Google Antigravity iniciado.");
+      } catch (e) { toast(e.message); }
+    };
+  }
+  if ($("#ag-btn-logout")) {
+    $("#ag-btn-logout").onclick = async () => {
+      if (!confirm("Deseja desconectar do Antigravity?")) return;
+      try {
+        await api("POST", "/api/accounts/logout", { provider: "antigravity" });
+        toast("Desconectado do Antigravity.");
+        renderContas();
+      } catch (e) { toast(e.message); }
+    };
+  }
+  if ($("#ag-btn-refresh")) {
+    $("#ag-btn-refresh").onclick = async () => {
+      toast("Atualizando dados do Antigravity…");
+      await renderContas();
+    };
+  }
+  if ($("#ag-save-key")) {
+    $("#ag-save-key").onclick = async () => {
+      const val = $("#ag-api-key").value.trim();
+      const lbl = $("#ag-key-label").value.trim() || null;
+      if (!val) { toast("Digite uma chave válida ou deixe em branco."); return; }
+      try {
+        await api("POST", "/api/accounts/key", { provider: "antigravity", key: val, label: lbl });
+        toast("Chave GEMINI_API_KEY salva e ativada!");
+        renderContas();
+      } catch (e) { toast(e.message); }
+    };
+  }
+  if ($("#ag-remove-key")) {
+    $("#ag-remove-key").onclick = async () => {
+      try {
+        await api("POST", "/api/accounts/key", { provider: "antigravity", key: null });
+        toast("Chave GEMINI_API_KEY removida.");
+        renderContas();
+      } catch (e) { toast(e.message); }
+    };
+  }
+  $$(".btn-ag-switch").forEach((btn) => {
+    btn.onclick = async () => {
+      const id = btn.dataset.id;
+      btn.disabled = true;
+      try {
+        await api("POST", "/api/accounts/switch-profile", { provider: "antigravity", profile_id: id });
+        toast("Conta alterada com sucesso!");
+        renderContas();
+      } catch (e) { toast(e.message); btn.disabled = false; }
+    };
+  });
+  $$(".btn-ag-del-prof").forEach((btn) => {
+    btn.onclick = async () => {
+      const id = btn.dataset.id;
+      if (!confirm("Remover este perfil salvo?")) return;
+      try {
+        await api("DELETE", `/api/accounts/profiles/antigravity/${encodeURIComponent(id)}`);
+        toast("Perfil removido.");
+        renderContas();
+      } catch (e) { toast(e.message); }
+    };
+  });
+
+  // Login / Logout Claude
+  $("#claude-btn-login").onclick = async () => {
+    try {
+      await api("POST", "/api/accounts/login", { provider: "claude" });
+      monitorarLogin("claude", "Claude");
+    } catch (e) { toast(e.message); }
+  };
+  if ($("#claude-btn-logout")) {
+    $("#claude-btn-logout").onclick = async () => {
+      if (!confirm("Deseja desconectar a conta atual do Claude?")) return;
+      try {
+        await api("POST", "/api/accounts/logout", { provider: "claude" });
+        toast("Conta do Claude desconectada.");
+        renderContas();
+      } catch (e) { toast(e.message); }
+    };
+  }
+
+  // Login / Logout Codex
+  $("#codex-btn-login").onclick = async () => {
+    try {
+      await api("POST", "/api/accounts/login", { provider: "codex" });
+      monitorarLogin("codex", "Codex");
+    } catch (e) { toast(e.message); }
+  };
+  if ($("#codex-btn-logout")) {
+    $("#codex-btn-logout").onclick = async () => {
+      if (!confirm("Deseja desconectar a conta atual do Codex?")) return;
+      try {
+        await api("POST", "/api/accounts/logout", { provider: "codex" });
+        toast("Conta do Codex desconectada.");
+        renderContas();
+      } catch (e) { toast(e.message); }
+    };
+  }
+
+  // Alternância e exclusão de perfis Codex
+  $$(".btn-codex-switch").forEach((btn) => {
+    btn.onclick = async () => {
+      const id = btn.dataset.id;
+      btn.disabled = true;
+      try {
+        await api("POST", "/api/accounts/switch-profile", { provider: "codex", profile_id: id });
+        toast("Conta alterada com sucesso!");
+        renderContas();
+      } catch (e) { toast(e.message); btn.disabled = false; }
+    };
+  });
+  $$(".btn-codex-del-prof").forEach((btn) => {
+    btn.onclick = async () => {
+      const id = btn.dataset.id;
+      if (!confirm("Remover este perfil salvo?")) return;
+      try {
+        await api("DELETE", `/api/accounts/profiles/codex/${encodeURIComponent(id)}`);
+        toast("Perfil removido.");
+        renderContas();
+      } catch (e) { toast(e.message); }
+    };
+  });
+
+  // Alternância e exclusão de perfis Claude
+  $$(".btn-claude-switch").forEach((btn) => {
+    btn.onclick = async () => {
+      const id = btn.dataset.id;
+      btn.disabled = true;
+      try {
+        await api("POST", "/api/accounts/switch-profile", { provider: "claude", profile_id: id });
+        toast("Chave ativada!");
+        renderContas();
+      } catch (e) { toast(e.message); btn.disabled = false; }
+    };
+  });
+  $$(".btn-claude-del-prof").forEach((btn) => {
+    btn.onclick = async () => {
+      const id = btn.dataset.id;
+      if (!confirm("Remover esta chave salva?")) return;
+      try {
+        await api("DELETE", `/api/accounts/profiles/claude/${encodeURIComponent(id)}`);
+        toast("Chave removida.");
+        renderContas();
+      } catch (e) { toast(e.message); }
+    };
+  });
+
+  // Binds de chaves Claude
+  $("#claude-save-key").onclick = async () => {
+    const val = $("#claude-api-key").value.trim();
+    const lbl = $("#claude-key-label").value.trim() || null;
+    if (!val) { toast("Digite uma chave válida ou deixe em branco."); return; }
+    try {
+      await api("POST", "/api/accounts/key", { provider: "claude", key: val, label: lbl });
+      toast("Chave do Claude salva e ativada!");
+      renderContas();
+    } catch (e) { toast(e.message); }
+  };
+  if ($("#claude-remove-key")) {
+    $("#claude-remove-key").onclick = async () => {
+      try {
+        await api("POST", "/api/accounts/key", { provider: "claude", key: null });
+        toast("Chave removida. O Claude voltará ao login local.");
+        renderContas();
+      } catch (e) { toast(e.message); }
+    };
+  }
+  $("#claude-btn-refresh").onclick = async () => {
+    await api("POST", "/api/meta/refresh");
+    toast("Consultando o Claude Code… (alguns segundos)");
+    setTimeout(async () => { await loadMeta(); renderContas(); }, 6000);
+  };
+  if ($("#codex-btn-refresh")) {
+    $("#codex-btn-refresh").onclick = async () => {
+      toast("Atualizando dados do Codex…");
+      await loadAccounts();
+      renderContas();
+    };
+  }
+
+  // Binds de chaves Codex
+  $("#codex-save-key").onclick = async () => {
+    const val = $("#codex-api-key").value.trim();
+    const lbl = $("#codex-key-label").value.trim() || null;
+    if (!val) { toast("Digite uma chave válida ou deixe em branco."); return; }
+    try {
+      await api("POST", "/api/accounts/key", { provider: "codex", key: val, label: lbl });
+      toast("Chave do Codex salva e ativada!");
+      renderContas();
+    } catch (e) { toast(e.message); }
+  };
+  if ($("#codex-remove-key")) {
+    $("#codex-remove-key").onclick = async () => {
+      try {
+        await api("POST", "/api/accounts/key", { provider: "codex", key: null });
+        toast("Chave removida. O Codex voltará ao login do ChatGPT.");
+        renderContas();
+      } catch (e) { toast(e.message); }
+    };
+  }
+
+  const setupSandbox = async (mode) => {
     try { await api("POST", "/api/codex/sandbox/setup", { mode }); toast("Configuração do sandbox iniciada…"); }
     catch (e) { toast(e.message); }
   };
-  $("#st-sbx-unelev").onclick = () => setup("unelevated");
-  $("#st-sbx-elev").onclick = () => setup("elevated");
-  $("#st-mcp-recheck").onclick = async () => { await loadMeta(); updateMcpAlert(); renderMcpCard(); };
-  renderMcpCard();
-  if (m.codex.available) {
+  $("#st-sbx-unelev").onclick = () => setupSandbox("unelevated");
+  $("#st-sbx-elev").onclick = () => setupSandbox("elevated");
+
+  if (codex.available) {
     const r = await api("GET", "/api/codex/sandbox").catch((e) => ({ status: "error", error: e.message }));
     const label = { ready: "✅ pronto", notConfigured: "⚠️ não configurado", error: "erro: " + (r.error || "") }[r.status] || r.status;
-    const el = $("#st-sbx");
+    const el = $("#st-sbx-status");
     if (el) el.textContent = label;
   }
+}
+
+async function renderMcpSection() {
+  const container = $("#sec-mcp");
+  if (!container) return;
+  container.innerHTML = `
+    <div class="card">
+      <h3>Servidores MCP (Model Context Protocol)</h3>
+      <div class="hint" style="margin-top:2px">
+        Os mesmos servidores que o Claude Code e o Codex usam no VS Code. MCPs que rodam de dentro de uma extensão do VS Code
+        (como o Power BI) têm a versão da extensão no caminho: quando ela atualiza, aparecem aqui como desatualizados ou quebrados, com o botão <b>Corrigir</b>. A correção faz backup do arquivo antes.
+      </div>
+      <div id="mcp-card-body"><div class="muted small" style="margin-top:12px">Verificando servidores MCP…</div></div>
+      <div class="row gap" style="margin-top:14px">
+        <button class="btn" id="st-mcp-recheck">↻ Verificar novamente</button>
+      </div>
+    </div>
+  `;
+  $("#st-mcp-recheck").onclick = async () => {
+    await loadMeta();
+    updateMcpAlert();
+    renderMcpCard();
+  };
+  renderMcpCard();
+}
+
+async function renderGeralSection() {
+  const container = $("#sec-geral");
+  if (!container) return;
+  container.innerHTML = `
+    <div class="card">
+      <h3>Agent Hub</h3>
+      <div>Servidor ligado <b id="st-inicio">…</b></div>
+      <div class="hint">Depois de uma atualização do Agent Hub, reinicie por aqui: o servidor liga de novo já com as mudanças e esta tela recarrega sozinha, sem precisar fechar a janela. Conversas que estiverem trabalhando são interrompidas (você é avisado antes).</div>
+      <div class="row gap" style="margin-top:12px"><button class="btn" id="st-reiniciar">↻ Reiniciar o Agent Hub</button></div>
+    </div>
+    <div class="card">
+      <h3>Aparência</h3>
+      <label>Tema da interface</label>
+      <div class="seg" id="st-theme"><button data-t="">Sistema</button><button data-t="light">Claro</button><button data-t="dark">Escuro</button></div>
+      <label style="margin-top:14px">Fonte das respostas</label>
+      <div class="seg" id="st-fonte"><button data-f="">Estilo Claude (serifada)</button><button data-f="sans">Sem serifa</button></div>
+    </div>
+  `;
+  api("GET", "/api/servidor").then((i) => {
+    const el = $("#st-inicio");
+    if (el) el.textContent = fmtQuando(i.inicio);
+  }).catch(() => {});
+  $("#st-reiniciar").onclick = reiniciarServidor;
+  const theme = localStorageGet("theme") || "";
+  $$("#st-theme button").forEach((b) => {
+    b.classList.toggle("on", b.dataset.t === theme);
+    b.onclick = () => { setTheme(b.dataset.t); renderGeralSection(); };
+  });
+  const fonte = localStorageGet("fonte") || "";
+  $$("#st-fonte button").forEach((b) => {
+    b.classList.toggle("on", b.dataset.f === fonte);
+    b.onclick = () => { setFonte(b.dataset.f); renderGeralSection(); };
+  });
+}
+
+function switchSettingsSection(sec, subArg = null) {
+  S.settingsSection = sec || "geral";
+  $$("#settings-tabs button").forEach((b) => {
+    b.classList.toggle("on", b.dataset.sec === S.settingsSection);
+  });
+  for (const s of ["geral", "contas", "agentes", "mcp"]) {
+    const el = $(`#sec-${s}`);
+    if (el) el.classList.toggle("hidden", s !== S.settingsSection);
+  }
+  if (S.settingsSection === "geral") renderGeralSection();
+  else if (S.settingsSection === "contas") renderContas();
+  else if (S.settingsSection === "agentes") {
+    renderAgentList();
+    if (subArg === "new") editAgent(null);
+    else if (subArg) editAgent(subArg);
+    else if (S.editingAgentId) editAgent(S.editingAgentId);
+    else showAgentPlaceholder();
+  }
+  else if (S.settingsSection === "mcp") renderMcpSection();
+}
+
+function renderSettings(sec = null, subArg = null) {
+  switchSettingsSection(sec || S.settingsSection || "geral", subArg);
 }
 function setFonte(f) {
   localStorageSet("fonte", f);
@@ -1437,7 +2131,7 @@ function connectWs() {
         break;
       case "codex_sandbox":
         toast(m.result.success ? `Sandbox do Codex configurado (${m.result.mode}).` : `Falha ao configurar sandbox: ${m.result.error || ""}`, 7000);
-        if (S.view === "settings") renderSettings();
+        if (S.view === "settings" && S.settingsSection === "contas") renderContas();
         break;
     }
   };
@@ -1449,9 +2143,20 @@ function notify(text) {
 }
 
 /* ------------------------------------------------------------------ carga e rotas */
-async function loadMeta() { S.meta = await api("GET", "/api/meta"); }
+async function loadAccounts() {
+  try {
+    const res = await api("GET", "/api/accounts");
+    S.accounts = res.accounts || [];
+  } catch {
+    S.accounts = [];
+  }
+}
+async function loadMeta() {
+  S.meta = await api("GET", "/api/meta");
+  await loadAccounts();
+}
 async function loadChats() { S.chats = await api("GET", "/api/chats"); renderChatList(); }
-async function loadAgents() { S.agents = await api("GET", "/api/agents"); if (S.view === "agents") renderAgentList(); renderChatList(); renderSideAgents(); }
+async function loadAgents() { S.agents = await api("GET", "/api/agents"); if (S.view === "settings" && S.settingsSection === "agentes") renderAgentList(); renderChatList(); renderSideAgents(); }
 
 /* ------------------------------------------------------------------ consumo */
 /* Aba "Consumo": limites do plano (reais) + de onde vem o uso (aproximado, pelos históricos deste computador). */
@@ -1492,18 +2197,29 @@ function barraLimite(j) {
   </div>`;
 }
 function cardLimites(d) {
-  const lc = d.limites_claude, lx = d.codex.limites;
+  const lc = d.limites_claude, lx = d.codex?.limites, lag = d.limites_antigravity;
   const extra = lc?.extra === "rejected"
     ? `<div class="hint">Uso extra (além do plano): indisponível${lc.extra_motivo === "out_of_credits" ? " — sem créditos" : ""}.</div>` : "";
-  return `<div class="card" id="cs-limites"><h3>Limites do plano</h3>
+  return `<div class="card" id="cs-limites"><h3>Limites e Uso das IAs</h3>
     <div class="lim-grid">
+      <div><div class="lim-prov"><span class="badge antigravity">Google Antigravity</span>${lag?.status ? ` <span class="muted small">${esc(lag.status)}</span>` : ""}</div>
+        <div class="lim-item">
+          <div class="lim-h"><span>Uso hoje</span><span class="lim-val">${fmtTokens(lag?.tokens_hoje || 0)} tokens</span></div>
+          <div class="lim-barra"><i style="width:${Math.min(100, Math.round((lag?.tokens_hoje || 0) / 1000))}%"></i></div>
+        </div>
+        <div class="lim-item">
+          <div class="lim-h"><span>Uso na semana</span><span class="lim-val">${fmtTokens(lag?.tokens_semana || 0)} tokens</span></div>
+          <div class="lim-barra"><i style="width:${Math.min(100, Math.round((lag?.tokens_semana || 0) / 5000))}%"></i></div>
+        </div>
+        <div class="hint">${fmtNum(lag?.requisicoes_hoje || 0)} requisições hoje · Gemini 3.8 Flash, Claude Sonnet 4.6 Thinking</div>
+      </div>
       <div><div class="lim-prov"><span class="badge claude">Claude</span></div>
-        ${lc?.janelas?.length ? lc.janelas.map(barraLimite).join("") + extra + `<div class="hint">Atualizado ${fmtHaQuanto(lc.visto_em)} · vale para toda a sua conta (todos os dispositivos e claude.ai)</div>`
+        ${lc?.janelas?.length ? lc.janelas.map(barraLimite).join("") + extra + `<div class="hint">Atualizado ${fmtHaQuanto(lc.visto_em)} · conta Anthropic</div>`
           : `<div class="hint">Ainda sem informação. Clique em "Atualizar agora".</div>`}
         <button class="btn" id="cs-lim-atualizar" style="margin-top:8px">↻ Atualizar agora</button>
       </div>
       <div><div class="lim-prov"><span class="badge codex">Codex</span>${lx?.plano ? ` <span class="muted small">plano ${esc(lx.plano)}</span>` : ""}</div>
-        ${lx?.janelas?.length ? lx.janelas.map(barraLimite).join("") + `<div class="hint">Visto ${fmtHaQuanto(lx.visto_em)} (última conversa do Codex)</div>`
+        ${lx?.janelas?.length ? lx.janelas.map(barraLimite).join("") + `<div class="hint">Visto ${fmtHaQuanto(lx.visto_em)} (conversas do Codex)</div>`
           : `<div class="hint">Sem conversas recentes do Codex para ler o limite.</div>`}
       </div>
     </div></div>`;
@@ -1555,12 +2271,12 @@ async function renderConsumo(forcarLimites = false) {
     b.classList.toggle("on", b.dataset.p === S.consumoPeriodo);
     b.onclick = () => { S.consumoPeriodo = b.dataset.p; localStorageSet("consumoPeriodo", b.dataset.p); renderConsumo(); };
   });
-  if (!body.innerHTML.trim()) body.innerHTML = `<div class="muted small">Lendo os históricos do Claude e do Codex…</div>`;
+  if (!body.innerHTML.trim()) body.innerHTML = `<div class="muted small">Lendo os históricos do Antigravity, Claude e Codex…</div>`;
   let d;
   try { d = await api("GET", `/api/consumo?periodo=${S.consumoPeriodo}`); }
   catch (e) { body.innerHTML = `<div class="err-box">${esc(e.message)}</div>`; return; }
   if (S.view !== "consumo") return;
-  const c = d.claude, x = d.codex;
+  const c = d.claude, x = d.codex, ag = d.antigravity || {};
   const tokEntrada = (c.tokens.in || 0) + (c.tokens.cr || 0) + (c.tokens.cw5 || 0) + (c.tokens.cw1h || 0);
   const nomePeriodo = d.periodo === "dia" ? "Últimas 24 h" : "Últimos 7 dias";
   body.innerHTML = `<div class="cs-grid">
@@ -1592,21 +2308,34 @@ async function renderConsumo(forcarLimites = false) {
     </div>
     <div class="card"><h3>Conversas que mais consumiram</h3>${cardSessoes(c.top_sessoes)}</div>
     <div class="cs-coluna">
-    <div class="card"><h3>Ferramentas mais usadas</h3>
-      <div class="cs-ferr">${c.ferramentas.map((f) => `<span class="tag" title="${esc(f.nome)}">${esc(f.nome)} <b>${fmtNum(f.chamadas)}</b></span>`).join("") || `<span class="hint">Nenhuma.</span>`}</div>
-    </div>
-    <div class="card"><h3>${nomePeriodo} · <span class="badge codex">Codex</span></h3>
-      ${x.sessoes ? `<div class="cs-kpis">
-          <div><b>${fmtNum(x.sessoes)}</b><span>conversas</span></div>
-          <div><b>${fmtTokens(x.tokens.in)}</b><span>tokens lidos</span></div>
-          <div><b>${fmtPct(x.tokens.in ? 100 * x.tokens.cached / x.tokens.in : 0)}</b><span>do contexto veio do cache</span></div>
-          <div><b>${fmtTokens(x.tokens.out)}</b><span>tokens gerados</span></div>
-          <div><b>${fmtTokens(x.tokens.reasoning)}</b><span>de raciocínio</span></div>
-        </div>
-        <div class="cs-tabs">${tabelaPct("Modelos", x.modelos)}</div>
-        <h4 class="cs-sub">Conversas que mais consumiram</h4>${cardSessoes(x.top_sessoes, true)}`
-        : `<div class="hint">Sem uso do Codex no período.</div>`}
-    </div>
+      <div class="card"><h3>Ferramentas mais usadas</h3>
+        <div class="cs-ferr">${c.ferramentas.map((f) => `<span class="tag" title="${esc(f.nome)}">${esc(f.nome)} <b>${fmtNum(f.chamadas)}</b></span>`).join("") || `<span class="hint">Nenhuma.</span>`}</div>
+      </div>
+      <div class="card"><h3>${nomePeriodo} · <span class="badge antigravity">Google Antigravity</span></h3>
+        ${ag.sessoes ? `<div class="cs-kpis">
+            <div><b>${fmtNum(ag.sessoes)}</b><span>conversas</span></div>
+            <div><b>${fmtNum(ag.requisicoes || 0)}</b><span>requisições</span></div>
+            <div><b>${fmtTokens(ag.tokens?.in || 0)}</b><span>tokens lidos</span></div>
+            <div><b>${fmtTokens(ag.tokens?.thinking || 0)}</b><span>de raciocínio</span></div>
+            <div><b>${fmtTokens(ag.tokens?.out || 0)}</b><span>tokens gerados</span></div>
+            <div><b>${fmtTokens(ag.tokens?.total || 0)}</b><span>total de tokens</span></div>
+          </div>
+          <div class="cs-tabs">${tabelaPct("Modelos", ag.modelos || [])}</div>
+          <h4 class="cs-sub">Conversas que mais consumiram</h4>${cardSessoes(ag.top_sessoes || [], true)}`
+          : `<div class="hint">Sem uso do Antigravity registrado no período.</div>`}
+      </div>
+      <div class="card"><h3>${nomePeriodo} · <span class="badge codex">Codex</span></h3>
+        ${x.sessoes ? `<div class="cs-kpis">
+            <div><b>${fmtNum(x.sessoes)}</b><span>conversas</span></div>
+            <div><b>${fmtTokens(x.tokens.in)}</b><span>tokens lidos</span></div>
+            <div><b>${fmtPct(x.tokens.in ? 100 * x.tokens.cached / x.tokens.in : 0)}</b><span>do contexto veio do cache</span></div>
+            <div><b>${fmtTokens(x.tokens.out)}</b><span>tokens gerados</span></div>
+            <div><b>${fmtTokens(x.tokens.reasoning)}</b><span>de raciocínio</span></div>
+          </div>
+          <div class="cs-tabs">${tabelaPct("Modelos", x.modelos)}</div>
+          <h4 class="cs-sub">Conversas que mais consumiram</h4>${cardSessoes(x.top_sessoes, true)}`
+          : `<div class="hint">Sem uso do Codex no período.</div>`}
+      </div>
     </div>
     </div>
     <div class="hint cs-rodape">Aproximado, com base nas conversas deste computador (VS Code e Agent Hub). Não inclui outros dispositivos nem o claude.ai.
@@ -1628,18 +2357,26 @@ async function atualizarLimites(avisar) {
 /* Selos no botão "Consumo": quanto do limite do plano já foi USADO no Claude e no Codex (o maior entre as
    janelas de cada um, ex.: sessão de 5 h ou semana). A cor muda a partir de 75% e de 90%. */
 function seloUso(nome, lim) {
+  if (!lim) return "";
   const janelas = lim?.janelas || [];
-  if (!janelas.length) return "";
-  const pior = janelas.reduce((a, j) => ((j.pct || 0) > (a.pct || 0) ? j : a), janelas[0]);
-  const pct = Math.round(pior.pct || 0);
-  const nivel = pct >= 90 ? "alto" : pct >= 75 ? "medio" : "";
-  const titulo = `${nome}: ` + janelas.map((j) => `${j.nome} ${Math.round(j.pct || 0)}% usado${j.reset ? ` (reinicia ${fmtQuando(j.reset)})` : ""}`).join(" · ");
-  return `<span class="uso-selo ${nivel}" title="${esc(titulo)}">${nome} ${pct}%</span>`;
+  if (janelas.length) {
+    const pior = janelas.reduce((a, j) => ((j.pct || 0) > (a.pct || 0) ? j : a), janelas[0]);
+    const pct = Math.round(pior.pct || 0);
+    const nivel = pct >= 90 ? "alto" : pct >= 75 ? "medio" : "";
+    const titulo = `${nome}: ` + janelas.map((j) => `${j.nome} ${Math.round(j.pct || 0)}% usado${j.reset ? ` (reinicia ${fmtQuando(j.reset)})` : ""}`).join(" · ");
+    return `<span class="uso-selo ${nivel}" title="${esc(titulo)}">${nome} ${pct}%</span>`;
+  }
+  if (lim.tokens_hoje !== undefined && lim.tokens_hoje > 0) {
+    const tok = fmtTokens(lim.tokens_hoje);
+    const tit = `${nome}: ${fmtNum(lim.requisicoes_hoje || 0)} requisições hoje (${fmtTokens(lim.tokens_hoje)} tokens)`;
+    return `<span class="uso-selo" title="${esc(tit)}">${nome} ${tok}</span>`;
+  }
+  return "";
 }
 async function atualizarAlertaConsumo() {
   try {
     const r = await api("GET", "/api/consumo/limites");
-    const selos = [seloUso("Claude", r.limites), seloUso("Codex", r.codex)].filter(Boolean);
+    const selos = [seloUso("Claude", r.limites), seloUso("Codex", r.codex), seloUso("Antigravity", r.antigravity)].filter(Boolean);
     $("#consumo-alert").innerHTML = selos.join('<span class="uso-sep">|</span>');
   } catch { /* sem dados ainda */ }
 }
@@ -1650,14 +2387,18 @@ function route() {
   if (m) return openChat(m[1]);
   const ag = hash.match(/^#\/agents(?:\/(\w+))?/);
   if (ag) {
-    show("agents");
-    if (ag[1] === "new") editAgent(null);
-    else if (ag[1]) editAgent(ag[1]);
-    else if (S.editingAgentId) editAgent(S.editingAgentId);
-    else { renderAgentList(); showAgentPlaceholder(); }
+    show("settings");
+    switchSettingsSection("agentes", ag[1] || null);
     return;
   }
-  if (hash === "#/settings") { show("settings"); renderSettings(); return; }
+  const st = hash.match(/^#\/settings(?:\/(\w+)(?:\/(\w+))?)?/);
+  if (st) {
+    show("settings");
+    const sec = st[1] || "geral";
+    const sub = st[2] || null;
+    switchSettingsSection(sec, sub);
+    return;
+  }
   if (hash === "#/consumo") { show("consumo"); renderConsumo(); return; }
   if (hash === "#/import") { show("import"); renderImport(); return; }
   const nv = hash.match(/^#\/novo(?:\/(\w+))?(?:\?p=(claude|codex))?/);
@@ -1668,7 +2409,7 @@ function route() {
 function bind() {
   $("#btn-new-chat").onclick = () => { if (location.hash === "#/novo") openStart(null, null); else location.hash = "#/novo"; };
   $("#agents-toggle").onclick = () => { S.agentsCollapsed = !S.agentsCollapsed; renderSideAgents(); };
-  $("#agents-add").onclick = (e) => { e.stopPropagation(); location.hash = "#/agents/new"; };
+  $("#agents-add").onclick = (e) => { e.stopPropagation(); location.hash = "#/settings/agentes/new"; };
   $("#start-send").onclick = startSend;
   ligarAnexos("chat", $("#input"), $("#btn-attach"), $("#file-input"), $("#view-chat"));
   ligarAnexos("start", $("#start-input"), $("#btn-start-attach"), $("#start-file-input"), $("#view-start"));
@@ -1680,8 +2421,11 @@ function bind() {
     e.target.style.height = Math.min(e.target.scrollHeight, 260) + "px";
     atualizarBotaoEnviar("start");
   });
-  $("#start-edit-agent").onclick = () => S.start?.agentId && (location.hash = `#/agents/${S.start.agentId}`);
-  $("#btn-agents").onclick = () => (location.hash = "#/agents");
+  $("#start-edit-agent").onclick = () => S.start?.agentId && (location.hash = `#/settings/agentes/${S.start.agentId}`);
+  if ($("#btn-agents")) $("#btn-agents").onclick = () => (location.hash = "#/settings/agentes");
+  $$("#settings-tabs button").forEach((b) => (b.onclick = () => {
+    location.hash = `#/settings/${b.dataset.sec}`;
+  }));
   $("#btn-import").onclick = () => (location.hash = "#/import");
   $$("#import-provider button").forEach((b) => (b.onclick = () => {
     S.importProvider = b.dataset.p;

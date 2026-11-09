@@ -1,15 +1,17 @@
 # Agent Hub
 
-Central local de chats com **Claude** e **Codex**: várias conversas em paralelo, agentes personalizados e aprovação de ações pela tela. Funciona sem assinatura do Copilot, usando os logins que você já tem no Claude Code e no Codex.
+Central local de chats com **Google Antigravity**, **Claude** e **Codex**: várias conversas em paralelo, agentes personalizados, gestão de contas de IA diretamente pela interface e aprovação de ações pela tela. Funciona usando os logins que você já tem no Antigravity, Claude Code e Codex, ou com suas próprias chaves de API.
 
 ## Instalar em outra máquina
 
 1. Instale o **Python 3.11+** (marque "Add Python to PATH") e o **Git**.
 2. Baixe o projeto: `git clone <url-do-repositório>`.
-3. **Claude:** instale a extensão Claude Code no VS Code e faça login nela uma vez (o Agent Hub usa esse login).
-4. **Codex (opcional):** instale a extensão Codex/ChatGPT no VS Code e faça login.
-5. **MCPs (Power BI, Superset…):** as configurações não vão no repositório, porque ficam em `~/.claude.json` e `~/.codex/config.toml` de cada máquina, assim como credenciais (ex.: `superset-mcp\credentials.xml`). Configure de novo na máquina nova e depois confira em **Ambiente → Servidores MCP**.
-6. Dê dois cliques em `Iniciar.bat`. Na primeira vez ele cria o ambiente Python, instala as dependências e cria o atalho **Agent Hub**.
+3. **IAs e Contas:** Ao abrir o Agent Hub, você pode conectar suas IAs pelo botão **+ Adicionar IA** em **Configurações → Contas**:
+   - **Google Antigravity:** Conecte com sua Conta Google (detecta automaticamente o login ativo) ou use a chave `GEMINI_API_KEY`.
+   - **Claude:** Instale a extensão Claude Code no VS Code e faça login (ou insira uma chave da Anthropic API).
+   - **Codex (opcional):** Instale a extensão Codex/ChatGPT no VS Code ou insira uma chave da OpenAI API.
+4. **MCPs (Power BI, Superset…):** as configurações não vão no repositório, porque ficam em `~/.claude.json` e `~/.codex/config.toml` de cada máquina, assim como credenciais (ex.: `superset-mcp\credentials.xml`). Configure de novo na máquina nova e depois confira em **Configurações → MCP**.
+5. Dê dois cliques em `Iniciar.bat`. Na primeira vez ele cria o ambiente Python, instala as dependências e cria o atalho **Agent Hub**.
 
 Chats e agentes ficam na pasta `data/`, que **não vai para o GitHub**. Para levar seus agentes, copie `data/agents.json` para a pasta `data/` da outra máquina.
 
@@ -28,7 +30,7 @@ Para ver as mensagens do servidor, use `Iniciar.bat` (modo console): ele abre em
 - **Tudo do Codex**: config.toml (modelo padrão, MCP como o superset-herval), AGENTS.md, plano de tarefas e envio de mensagem durante a execução (a mensagem é incorporada ao turno em andamento).
 - **Retomar conversas**: o histórico fica salvo. Ao reabrir um chat, a sessão continua de onde parou.
 - **Importar conversas do VS Code**: em *⤓ Importar conversas* aparecem as conversas do Claude Code e do Codex (VS Code ou linha de comando). Ao importar, o histórico vem para a tela. Na primeira mensagem enviada daqui, o Agent Hub cria uma **cópia** (fork) com todo o contexto, e a original continua intacta no VS Code.
-- **Monitor de MCPs**: em *Ambiente → Servidores MCP* aparecem os MCPs do Claude e do Codex com o status de cada um. MCPs que rodam de dentro de extensões do VS Code (como o Power BI) têm a versão no caminho. Quando a extensão atualiza, o servidor aparece como desatualizado ou quebrado e o botão **Corrigir** aponta para a versão instalada, com backup do arquivo antes. Ao abrir o app, um alerta ⚠ avisa se houver problema.
+- **Monitor de MCPs**: em *Configurações → MCP* aparecem os MCPs do Claude e do Codex com o status de cada um. MCPs que rodam de dentro de extensões do VS Code (como o Power BI) têm a versão no caminho. Quando a extensão atualiza, o servidor aparece como desatualizado ou quebrado e o botão **Corrigir** aponta para a versão instalada, com backup do arquivo antes. Ao abrir o app, um alerta ⚠ avisa se houver problema.
 
 ## Permissões
 
@@ -44,7 +46,7 @@ Para ver as mensagens do servidor, use `Iniciar.bat` (modo console): ele abre em
 |---|---|
 | Somente leitura / Pode editar a pasta do chat / Acesso total | Pedir quando precisar / Pedir para quase tudo / Nunca pedir |
 
-**Sandbox do Windows (Codex):** enquanto ele estiver *não configurado* (veja em **Ambiente**), o Codex roda em modo somente leitura e pede aprovação para qualquer comando. Para configurar, vá em **Ambiente → Configurar sandbox**. O modo "elevado" pede confirmação de administrador (UAC).
+**Sandbox do Windows (Codex):** enquanto ele estiver *não configurado* (veja em **Configurações → Contas**), o Codex roda em modo somente leitura e pede aprovação para qualquer comando. Para configurar, vá em **Configurações → Contas → Sandbox**. O modo "elevado" pede confirmação de administrador (UAC).
 
 ## Onde ficam os dados
 

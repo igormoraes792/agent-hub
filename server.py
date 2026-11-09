@@ -17,7 +17,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from hub import consumo, importer, mcp_health, providers, store
+from hub import accounts, consumo, importer, mcp_health, providers, store
 from hub.janela import abrir_janela
 from hub.sessions import AGENT_CONTROLLED, bus, codex_server, effective_chat, manager
 
@@ -40,6 +40,7 @@ def _ignore_dropped_connections(loop: asyncio.AbstractEventLoop, context: dict) 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    accounts.carregar_chaves_ambiente()
     asyncio.get_running_loop().set_exception_handler(_ignore_dropped_connections)
     providers.claude_meta.refresh_in_background()
     reaper = asyncio.create_task(manager.reap_idle())
@@ -154,7 +155,11 @@ async def consumo_resumo(periodo: str = "dia"):
 
 @app.get("/api/consumo/limites")
 async def consumo_limites_salvos():
-    return {"limites": consumo.limites_claude(), "codex": await asyncio.to_thread(consumo.limites_codex)}
+    return {
+        "limites": consumo.limites_claude(),
+        "codex": await asyncio.to_thread(consumo.limites_codex),
+        "antigravity": consumo.limites_antigravity(),
+    }
 
 
 @app.post("/api/consumo/limites")
@@ -175,6 +180,78 @@ async def get_meta():
     except Exception:  # noqa: BLE001 - a checagem nunca deve impedir o app de abrir
         meta["mcpIssues"] = 0
     return meta
+
+
+# --- contas de IA -------------------------------------------------------------------------------
+@app.get("/api/accounts")
+async def accounts_list():
+    meta = providers.meta()
+    return {"accounts": accounts.get_all_accounts(meta)}
+
+
+@app.post("/api/accounts/key")
+async def accounts_set_key(body: dict):
+    provider = body.get("provider")
+    key = body.get("key")
+    label = body.get("label")
+    if provider not in ("claude", "codex", "antigravity"):
+        raise HTTPException(400, "Provedor inválido.")
+    accounts.set_account_key(provider, key, label)
+    meta = providers.meta()
+    if provider == "claude":
+        acc = accounts.get_claude_account(meta)
+    elif provider == "antigravity":
+        acc = accounts.get_antigravity_account(meta)
+    else:
+        acc = accounts.get_codex_account(meta)
+    return {"status": "ok", "account": acc}
+
+
+@app.post("/api/accounts/login")
+async def accounts_login(body: dict):
+    provider = body.get("provider")
+    try:
+        return accounts.iniciar_login(provider)
+    except Exception as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.post("/api/accounts/logout")
+async def accounts_logout(body: dict):
+    provider = body.get("provider")
+    try:
+        res = accounts.fazer_logout(provider)
+        if provider == "codex" and codex_server.proc and codex_server.proc.returncode is None:
+            try:
+                codex_server.proc.terminate()
+            except Exception:
+                pass
+            codex_server.proc = None
+        return res
+    except Exception as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.post("/api/accounts/switch-profile")
+async def accounts_switch(body: dict):
+    provider = body.get("provider")
+    profile_id = body.get("profile_id")
+    try:
+        res = accounts.switch_profile(provider, profile_id)
+        if provider == "codex" and codex_server.proc and codex_server.proc.returncode is None:
+            try:
+                codex_server.proc.terminate()
+            except Exception:
+                pass
+            codex_server.proc = None
+        return res
+    except Exception as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.delete("/api/accounts/profiles/{provider}/{profile_id}")
+async def accounts_del_profile(provider: str, profile_id: str):
+    return accounts.delete_profile(provider, profile_id)
 
 
 # --- servidores MCP -----------------------------------------------------------------------------
@@ -306,7 +383,7 @@ async def list_chats():
 async def create_chat(body: dict):
     agent = store.agents.get(body["agent_id"]) if body.get("agent_id") else None
     provider = (agent or {}).get("provider") or body.get("provider") or "claude"
-    if provider not in ("claude", "codex"):
+    if provider not in ("claude", "codex", "antigravity"):
         raise HTTPException(400, "provider inválido")
 
     def pick(field, default=None):
@@ -315,18 +392,22 @@ async def create_chat(body: dict):
             value = agent.get(field)
         return value if value not in (None, "") else default
 
+    default_model = "default" if provider == "claude" else ("gemini-3.8-flash-high" if provider == "antigravity" else None)
+    default_perm = "default" if provider == "claude" else ("auto" if provider == "antigravity" else "default")
+
     chat = store.chats.create({
         "title": body.get("title") or (f"{agent['name']}" if agent else "Novo chat"),
         "provider": provider,
         "agent_id": agent["id"] if agent else None,
-        "model": pick("model", "default" if provider == "claude" else None),
+        "model": pick("model", default_model),
         "effort": pick("effort"),
         "cwd": pick("cwd", str(Path.home())),
-        "permission_mode": pick("permission_mode", "default"),
+        "permission_mode": pick("permission_mode", default_perm),
         "sandbox": pick("sandbox", "workspace-write"),
         "approval_policy": pick("approval_policy", "on-request"),
         "session_id": None,
         "thread_id": None,
+        "conversation_id": None,
         "auto_title": not body.get("title"),
         # Mensagem de boas-vindas que o usuário viu antes de escrever (entra no histórico e no contexto da IA).
         "greeting": (body.get("greeting") or "").strip() or None,
@@ -546,7 +627,7 @@ def _clean_agent(body: dict) -> dict:
     for key in ("tools", "disallowed_tools", "subagents"):
         if isinstance(data.get(key), str):
             data[key] = [t.strip() for t in data[key].split(",") if t.strip()]
-    if data.get("provider") not in (None, "claude", "codex"):
+    if data.get("provider") not in (None, "claude", "codex", "antigravity"):
         raise HTTPException(400, "provider inválido")
     return data
 
