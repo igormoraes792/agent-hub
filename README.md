@@ -15,6 +15,14 @@ Central local de chats com **Google Antigravity**, **Claude** e **Codex**: vári
 
 Chats e agentes ficam na pasta `data/`, que **não vai para o GitHub**. Para levar seus agentes, copie `data/agents.json` para a pasta `data/` da outra máquina.
 
+**Criador de Agentes:** o repositório traz o agente que monta outros agentes por conversa. Ele faz as perguntas básicas, propõe a configuração e só cadastra depois do seu ok. Para colocá-lo no seu hub, com o hub aberto, rode na pasta do Agent Hub:
+
+```
+python -I -X utf8 agentes\criador-agentes\ferramentas\hub.py criar --arquivo agentes\criador-agentes\agente.json
+```
+
+Depois, abra **Criador de Agentes** na lista de agentes e descreva o que o novo agente deve fazer. Ele usa o Claude (Opus); se a sua conta não tiver esse modelo, troque o modelo na tela do agente.
+
 ## Como abrir
 
 Dê dois cliques no atalho **Agent Hub** (pode fixá-lo na barra de tarefas ou copiá-lo para a Área de Trabalho). Ele abre o hub numa janela própria, com o ícone do Agent Hub, e liga o servidor escondido por trás. Ao fechar a última janela, o servidor se desliga sozinho; se algum chat ainda estiver trabalhando, ele termina antes. Se o atalho não abrir, o motivo fica em `data/servidor.log`.
