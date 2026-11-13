@@ -249,6 +249,24 @@ label > .input, label > select, label > textarea, label > .row { margin-top: 4px
 .bubble-doc:hover { border-color: var(--accent); }
 .bubble-doc .doc-ico { font-size: 16px; }
 .soltar-aqui { outline: 2px dashed var(--accent); outline-offset: -8px; border-radius: 12px; }
+/* Arquivos citados na resposta: abrir, baixar, PDF e prévia dos slides */
+.arq-cartoes { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; max-width: 640px; }
+.arq-card { border: 1px solid var(--border); background: var(--panel); border-radius: 10px; padding: 8px 10px; }
+.arq-linha { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.arq-linha .doc-info { flex: 1; }
+.arq-linha .doc-info small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.arq-acoes { display: flex; gap: 4px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
+.arq-btn { border: 1px solid var(--border); background: transparent; color: var(--text); font: inherit; font-size: 12px;
+  padding: 3px 9px; border-radius: 6px; cursor: pointer; text-decoration: none; line-height: 18px; }
+.arq-btn:hover { border-color: var(--accent); color: var(--accent); }
+.arq-btn:disabled { opacity: .6; cursor: wait; }
+.arq-previa { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; margin-top: 8px; }
+.arq-previa a { position: relative; display: block; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.arq-previa a:hover { border-color: var(--accent); }
+.arq-previa img { display: block; width: 100%; height: auto; }
+.arq-previa span { position: absolute; left: 4px; bottom: 4px; font-size: 11px; padding: 0 5px; border-radius: 4px;
+  background: rgba(0, 0, 0, .55); color: #fff; }
+@media (max-width: 600px) { .arq-linha { flex-wrap: wrap; } .arq-acoes { width: 100%; justify-content: flex-start; } }
 
 /* Blocos de código com botão Copiar */
 .code-block { margin: 8px 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }

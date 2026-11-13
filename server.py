@@ -17,7 +17,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from hub import accounts, consumo, importer, mcp_health, providers, store
+from hub import accounts, consumo, importer, mcp_health, office, providers, store
 from hub.janela import abrir_janela
 from hub.sessions import AGENT_CONTROLLED, bus, codex_server, effective_chat, manager
 
@@ -462,7 +462,7 @@ async def chat_events(chat_id: str):
 TIPOS_IMAGEM = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp"}
 # Documentos: salvos no disco; a IA recebe o caminho (e, no Excel, cada aba convertida em CSV).
 EXT_DOCUMENTOS = {"xlsx": "Excel", "xlsm": "Excel", "xls": "Excel (formato antigo)", "csv": "CSV", "pdf": "PDF",
-                  "docx": "Word", "txt": "texto", "json": "JSON", "md": "Markdown"}
+                  "docx": "Word", "pptx": "PowerPoint", "txt": "texto", "json": "JSON", "md": "Markdown"}
 MAX_IMAGEM_BYTES = 10 * 1024 * 1024
 MAX_DOCUMENTO_BYTES = 30 * 1024 * 1024
 MAX_ANEXOS = 10
@@ -504,8 +504,21 @@ def _salvar_anexos(chat_id: str, anexos: list) -> tuple[list[dict], list[dict]]:
             item["size"] = len(dados)
             if ext in ("xlsx", "xlsm"):
                 item["sheets"] = _excel_para_csv(pasta / nome)
+            if ext == "pptx":
+                item["slides"] = _pptx_para_markdown(pasta / nome)
             documentos.append(item)
     return imagens, documentos
+
+
+def _pptx_para_markdown(arquivo: Path) -> dict:
+    """Texto de cada slide em Markdown (ao lado do arquivo) para a IA ler sem abrir o PowerPoint."""
+    try:
+        info = office.ler(arquivo)
+    except Exception as e:  # noqa: BLE001 - a IA ainda recebe o arquivo original
+        return {"erro": f"não consegui ler os slides ({type(e).__name__})"}
+    destino = arquivo.with_name(f"{arquivo.stem}_slides.md")
+    destino.write_text(office.para_markdown(info), encoding="utf-8")
+    return {"total": info["total_slides"], "md": str(destino), "titulos": [s["titulo"] for s in info["slides"]][:30]}
 
 
 def _excel_para_csv(arquivo: Path) -> list[dict]:
@@ -557,6 +570,13 @@ def _bloco_documentos(documentos: list[dict]) -> str:
                           f"→ CSV (separador ;): {aba['csv']}")
             if aba["cabecalho"]:
                 linhas.append(f"    colunas: {', '.join(aba['cabecalho'])}")
+        slides = d.get("slides")
+        if slides and "erro" in slides:
+            linhas.append(f"  - {slides['erro']}; use o arquivo original.")
+        elif slides:
+            linhas.append(f"  - {slides['total']} slides; texto, tabelas e notas de cada slide em Markdown: {slides['md']}")
+            if slides["titulos"]:
+                linhas.append(f"    títulos: {' | '.join(t or '(sem título)' for t in slides['titulos'])}")
     return "\n".join(linhas)
 
 
@@ -584,7 +604,7 @@ async def chat_send(chat_id: str, body: dict):
 
 @app.get("/api/chats/{chat_id}/anexos/{nome}")
 async def chat_anexo(chat_id: str, nome: str):
-    if not re.fullmatch(r"[a-f0-9]{12}\.(png|jpg|gif|webp|xlsx|xlsm|xls|csv|pdf|docx|txt|json|md)", nome) \
+    if not re.fullmatch(r"[a-f0-9]{12}\.(png|jpg|gif|webp|xlsx|xlsm|xls|csv|pdf|docx|pptx|txt|json|md)", nome) \
             or not re.fullmatch(r"\w+", chat_id):
         raise HTTPException(404)
     arquivo = store.anexos_dir(chat_id) / nome
@@ -596,6 +616,73 @@ async def chat_anexo(chat_id: str, nome: str):
     original = next((d.get("name") for e in store.read_events(chat_id) for d in (e.get("files") or [])
                      if d.get("file") == nome), nome)
     return FileResponse(arquivo, filename=original)
+
+
+# --- arquivos citados nas respostas (abrir, baixar, exportar) ---------------------------------------
+# A IA grava arquivos no disco e cita o caminho; o chat mostra botões para eles. Só tipos de documento, só dentro da
+# pasta do usuário (o servidor roda nesta máquina e só aceita POST da própria página).
+EXT_ARQUIVOS = {".pptx", ".pdf", ".png", ".xlsx", ".xlsm", ".docx", ".csv"}
+
+
+def _arquivo_local(caminho: str) -> Path:
+    try:
+        arquivo = Path(caminho or "").expanduser().resolve()
+    except (OSError, ValueError):
+        raise HTTPException(400, "caminho inválido") from None
+    if arquivo.suffix.lower() not in EXT_ARQUIVOS or not arquivo.is_relative_to(Path.home()):
+        raise HTTPException(403, "tipo de arquivo ou pasta não permitidos")
+    if not arquivo.is_file():
+        raise HTTPException(404, "arquivo não encontrado")
+    return arquivo
+
+
+@app.get("/api/arquivos/info")
+async def arquivo_info(path: str):
+    try:
+        arquivo = _arquivo_local(path)
+    except HTTPException as e:
+        return {"existe": False, "motivo": e.detail}
+    st = arquivo.stat()
+    return {"existe": True, "path": str(arquivo), "nome": arquivo.name, "pasta": str(arquivo.parent),
+            "ext": arquivo.suffix.lower()[1:], "tamanho": st.st_size, "modificado": st.st_mtime}
+
+
+@app.get("/api/arquivos/baixar")
+async def arquivo_baixar(path: str, inline: bool = False):
+    arquivo = _arquivo_local(path)
+    if inline:  # imagens da prévia e PDF abertos no próprio navegador
+        return FileResponse(arquivo)
+    return FileResponse(arquivo, filename=arquivo.name)
+
+
+@app.post("/api/arquivos/abrir")
+async def arquivo_abrir(body: dict):
+    """Abre no programa padrão do Windows (PowerPoint, Excel, leitor de PDF...)."""
+    arquivo = _arquivo_local(body.get("path"))
+    await asyncio.to_thread(os.startfile, str(arquivo))
+    return {"ok": True}
+
+
+@app.post("/api/arquivos/abrir-pasta")
+async def arquivo_abrir_pasta(body: dict):
+    arquivo = _arquivo_local(body.get("path"))
+    import subprocess
+    subprocess.Popen(["explorer", "/select,", str(arquivo)])
+    return {"ok": True}
+
+
+@app.post("/api/arquivos/exportar")
+async def arquivo_exportar(body: dict):
+    """PowerPoint -> PDF (ao lado do arquivo) ou PNG de cada slide (prévia)."""
+    arquivo = _arquivo_local(body.get("path"))
+    formato = body.get("formato")
+    if arquivo.suffix.lower() != ".pptx" or formato not in ("pdf", "png"):
+        raise HTTPException(400, "exportação disponível para .pptx em pdf ou png")
+    try:
+        saidas = await asyncio.to_thread(office.exportar, arquivo, formato)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(500, f"Não consegui exportar: {e}") from None
+    return {"arquivos": [str(p) for p in saidas]}
 
 
 @app.post("/api/chats/{chat_id}/interrupt")

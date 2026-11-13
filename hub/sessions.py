@@ -195,7 +195,7 @@ class ClaudeSession(Session):
             if sub and sub.get("provider") == "claude":
                 subagents[_slug(sub["name"])] = AgentDefinition(
                     description=sub.get("description") or sub["name"],
-                    prompt="\n\n".join(p for p in (IDIOMA, FUSO, _pasta_do_agente(sub), sub.get("prompt") or "") if p),
+                    prompt="\n\n".join(p for p in (IDIOMA, FUSO, OFFICE, _pasta_do_agente(sub), sub.get("prompt") or "") if p),
                     tools=_ferramentas(sub.get("tools")),
                     disallowedTools=sub.get("disallowed_tools") or None,
                     model=None if sub.get("model") in (None, "", "default") else sub["model"],
@@ -224,7 +224,8 @@ class ClaudeSession(Session):
             tools=_ferramentas((agent or {}).get("tools")),
             disallowed_tools=(agent or {}).get("disallowed_tools") or [],
             agents=subagents or None,
-            add_dirs=[self._pasta_anexos()],  # arquivos anexados pelo usuário: leitura sem pedir permissão
+            # Leitura sem pedir permissão: anexos do usuário e imagens dos slides gerados para conferência.
+            add_dirs=[self._pasta_anexos(), _pasta_previas()],
             stderr=self.stderr_tail.append,
         )
 
@@ -517,6 +518,24 @@ IDIOMA = ("Idioma: escreva SEMPRE em português do Brasil, em tudo o que aparece
           "comandos, nomes de arquivos/colunas e termos técnicos sem tradução.")
 
 
+_HUB = Path(__file__).resolve().parent.parent
+_PY_HUB = _HUB / ".venv" / "Scripts" / "python.exe"
+OFFICE = (f'PowerPoint (.pptx): para criar ou editar, escreva um script Python com python-pptx e rode com o Python do '
+          f'Agent Hub, que já tem python-pptx e openpyxl: "{_PY_HUB}". Para ler um pptx (textos, tabelas, gráficos e notas '
+          f'por slide): "{_PY_HUB}" "{_HUB / "hub" / "office.py"}" ler "<arquivo.pptx>". Depois de criar ou editar, confira '
+          f'o visual: o mesmo comando com exportar "<arquivo.pptx>" --formato png gera uma imagem por slide (abra os PNG e '
+          f'corrija texto cortado, sobreposto ou fora do slide); --formato pdf gera o PDF ao lado do arquivo. Ao editar um '
+          f'pptx do usuário, grave uma cópia nova (ex.: _v2) em vez de sobrescrever, a menos que ele peça. Ao entregar um '
+          f'arquivo, escreva o caminho completo dele na resposta: o Agent Hub mostra botões para abrir, baixar, exportar PDF '
+          f'e ver a prévia dos slides.')
+
+
+def _pasta_previas() -> str:
+    pasta = _HUB / "data" / "previas"
+    pasta.mkdir(parents=True, exist_ok=True)
+    return str(pasta)
+
+
 def _ferramentas(lista) -> list[str] | None:
     """No Windows o terminal do Claude Code pode aparecer como 'Bash' ou como 'PowerShell', conforme a sessão.
     Quem tem acesso a um recebe os dois, para nunca ficar sem terminal."""
@@ -539,8 +558,8 @@ def _pasta_do_agente(agent: dict) -> str:
 
 
 def extra_instructions(chat: dict, agent: dict | None) -> str:
-    """Idioma + instruções do agente + a saudação que o usuário viu antes de escrever."""
-    parts = [IDIOMA, FUSO]
+    """Idioma + fuso + PowerPoint + instruções do agente + a saudação que o usuário viu antes de escrever."""
+    parts = [IDIOMA, FUSO, OFFICE]
     if agent and agent.get("prompt"):
         parts.append(agent["prompt"])
     if chat.get("greeting"):
@@ -1064,7 +1083,7 @@ def _papel_codex(sub: dict) -> Path:
         linhas.append(f"model = {_toml_str(sub['model'])}")
     if sub.get("provider") == "codex" and sub.get("effort"):
         linhas.append(f"model_reasoning_effort = {_toml_str(sub['effort'])}")
-    instrucoes = "\n\n".join(p for p in (IDIOMA, FUSO, _pasta_do_agente(sub), sub.get("prompt") or "") if p)
+    instrucoes = "\n\n".join(p for p in (IDIOMA, FUSO, OFFICE, _pasta_do_agente(sub), sub.get("prompt") or "") if p)
     linhas.append(f"developer_instructions = {_toml_str(instrucoes)}")
     pasta = store.DATA_DIR / "codex-papeis"
     pasta.mkdir(parents=True, exist_ok=True)

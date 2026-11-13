@@ -457,6 +457,90 @@ function acoesMensagem(el, texto) {
   };
   bar.append(b);
   el.append(bar);
+  cartoesArquivos(el, texto);
+}
+
+/* Arquivos citados na resposta (caminho completo de um .pptx, .pdf, .xlsx...): cartão com Abrir, Baixar e, no
+   PowerPoint, PDF e prévia dos slides. Só aparecem os que existem no disco. */
+const EXT_CARTAO = "pptx|pdf|xlsx|xlsm|docx|csv|png";
+const ICONE_ARQUIVO = { pptx: "📽️", pdf: "📕", xlsx: "📊", xlsm: "📊", csv: "📊", docx: "📝", png: "🖼️" };
+function caminhosCitados(texto) {
+  const achados = new Set();
+  const comEspaco = new RegExp(`[\`"]([A-Za-z]:[\\\\/][^\`"\\n]+?\\.(?:${EXT_CARTAO}))[\`"]`, "gi");
+  const semEspaco = new RegExp(`[A-Za-z]:[\\\\/][^\\s"'<>|*?\`]+?\\.(?:${EXT_CARTAO})(?![\\w.])`, "gi");
+  for (const m of String(texto || "").matchAll(comEspaco)) achados.add(m[1]);
+  for (const m of String(texto || "").matchAll(semEspaco)) {
+    if (![...achados].some((a) => a.endsWith(m[0]) || a.includes(m[0]))) achados.add(m[0]);
+  }
+  return [...achados].slice(0, 8);
+}
+
+async function cartoesArquivos(el, texto) {
+  const caminhos = caminhosCitados(texto);
+  if (!caminhos.length || el.querySelector(":scope > .arq-cartoes")) return;
+  const caixa = h("div", { class: "arq-cartoes" });
+  const barra = el.querySelector(":scope > .msg-actions");
+  if (barra) barra.before(caixa); else el.append(caixa);
+  const infos = await Promise.all(caminhos.map((p) =>
+    api("GET", `/api/arquivos/info?path=${encodeURIComponent(p)}`).catch(() => null)));
+  const vistos = new Set();
+  for (const info of infos) {
+    if (!info?.existe || vistos.has(info.path.toLowerCase())) continue;
+    vistos.add(info.path.toLowerCase());
+    caixa.append(cartaoArquivo(info));
+  }
+  if (!caixa.children.length) caixa.remove();
+}
+
+const urlArquivo = (path, inline = false) => `/api/arquivos/baixar?path=${encodeURIComponent(path)}${inline ? "&inline=true" : ""}`;
+
+function cartaoArquivo(info) {
+  const pptx = info.ext === "pptx";
+  const card = h("div", { class: "arq-card" },
+    `<div class="arq-linha">
+       <span class="doc-ico">${ICONE_ARQUIVO[info.ext] || "📄"}</span>
+       <div class="doc-info"><b title="${esc(info.path)}">${esc(info.nome)}</b><small>${esc(info.pasta)} · ${tamanhoLegivel(info.tamanho)}</small></div>
+       <div class="arq-acoes">
+         <button type="button" class="arq-btn" data-a="abrir" title="Abrir no programa do Windows">Abrir</button>
+         <a class="arq-btn" href="${urlArquivo(info.path)}" download title="Baixar uma cópia">Baixar</a>
+         ${pptx ? `<button type="button" class="arq-btn" data-a="pdf" title="Exportar para PDF (ao lado do arquivo)">PDF</button>
+                   <button type="button" class="arq-btn" data-a="previa" title="Ver os slides aqui">Prévia</button>` : ""}
+         ${info.ext === "pdf" ? `<a class="arq-btn" href="${urlArquivo(info.path, true)}" target="_blank" rel="noopener" title="Ver no navegador">Ver</a>` : ""}
+         <button type="button" class="arq-btn" data-a="pasta" title="Mostrar na pasta">📁</button>
+       </div>
+     </div>
+     <div class="arq-previa hidden"></div>`);
+  const ocupado = async (btn, rotulo, fn) => {
+    const antes = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = rotulo;
+    try { await fn(); } catch (e) { toast(e.message, 6000); } finally { btn.disabled = false; btn.textContent = antes; }
+  };
+  card.addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-a]");
+    if (!btn) return;
+    const acao = btn.dataset.a;
+    if (acao === "abrir") ocupado(btn, "Abrindo…", () => api("POST", "/api/arquivos/abrir", { path: info.path }));
+    if (acao === "pasta") api("POST", "/api/arquivos/abrir-pasta", { path: info.path }).catch((err) => toast(err.message));
+    if (acao === "pdf") ocupado(btn, "Gerando…", async () => {
+      const r = await api("POST", "/api/arquivos/exportar", { path: info.path, formato: "pdf" });
+      const pdf = await api("GET", `/api/arquivos/info?path=${encodeURIComponent(r.arquivos[0])}`);
+      if (pdf.existe) card.after(cartaoArquivo(pdf));
+      toast("PDF gerado ao lado do arquivo.");
+    });
+    if (acao === "previa") {
+      const area = $(".arq-previa", card);
+      if (area.children.length) { area.classList.toggle("hidden"); return; }
+      ocupado(btn, "Gerando…", async () => {
+        const r = await api("POST", "/api/arquivos/exportar", { path: info.path, formato: "png" });
+        area.innerHTML = r.arquivos.map((p, i) =>
+          `<a href="${urlArquivo(p, true)}" target="_blank" rel="noopener" title="Slide ${i + 1}">
+             <img src="${urlArquivo(p, true)}" alt="Slide ${i + 1}" loading="lazy"><span>${i + 1}</span></a>`).join("");
+        area.classList.remove("hidden");
+      });
+    }
+  });
+  return card;
 }
 
 /* Botão "Copiar" em cada bloco de código das respostas. */
@@ -768,7 +852,7 @@ async function prepararImagem(file) {
   return { name: file.name || "imagem colada", media_type: tipo, data: dataUrl.split(",")[1], preview: dataUrl };
 }
 /* Documentos aceitos (vão para o disco; a IA recebe o caminho e, no Excel, cada aba em CSV). */
-const EXT_DOCUMENTOS = { xlsx: "📊", xlsm: "📊", xls: "📊", csv: "📊", pdf: "📕", docx: "📝", txt: "📄", json: "📄", md: "📄" };
+const EXT_DOCUMENTOS = { xlsx: "📊", xlsm: "📊", xls: "📊", csv: "📊", pdf: "📕", docx: "📝", pptx: "📽️", txt: "📄", json: "📄", md: "📄" };
 const extensao = (nome) => (String(nome || "").match(/\.([a-z0-9]+)$/i) || [])[1]?.toLowerCase() || "";
 const ehDocumento = (f) => !!EXT_DOCUMENTOS[extensao(f?.name)];
 const ehImagem = (f) => !!f?.type && TIPOS_IMAGEM.test(f.type);
@@ -783,7 +867,7 @@ async function adicionarAnexos(onde, arquivos) {
   const lista = [...arquivos].filter(Boolean);
   const validos = lista.filter((f) => ehImagem(f) || ehDocumento(f));
   const recusados = lista.filter((f) => !ehImagem(f) && !ehDocumento(f));
-  if (recusados.length) toast(`Tipo não suportado: ${recusados.map((f) => f.name).join(", ")}. Use imagens, Excel, CSV, PDF, Word, TXT, JSON ou MD.`, 6000);
+  if (recusados.length) toast(`Tipo não suportado: ${recusados.map((f) => f.name).join(", ")}. Use imagens, Excel, CSV, PDF, Word, PowerPoint, TXT, JSON ou MD.`, 6000);
   if (!validos.length) return false;
   for (const f of validos) {
     if (S.anexos[onde].length >= 10) { toast("No máximo 10 arquivos por mensagem."); break; }
