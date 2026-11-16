@@ -2078,6 +2078,14 @@ async function renderGeralSection() {
       <h3>Aparência</h3>
       <label>Tema da interface</label>
       <div class="seg" id="st-theme"><button data-t="">Sistema</button><button data-t="light">Claro</button><button data-t="dark">Escuro</button></div>
+      <label style="margin-top:14px">Cor de destaque (Estilo AeroMonitor Glass)</label>
+      <div class="theme-accent-row" id="st-accent">
+        <button type="button" class="accent-btn" data-a="orange" title="Coral Âmbar (AeroMonitor)"><span style="background:#e88662"></span> Laranja</button>
+        <button type="button" class="accent-btn" data-a="blue" title="Azul Celeste"><span style="background:#38bdf8"></span> Azul</button>
+        <button type="button" class="accent-btn" data-a="green" title="Verde Esmeralda"><span style="background:#22c55e"></span> Verde</button>
+        <button type="button" class="accent-btn" data-a="purple" title="Roxo Neon"><span style="background:#c084fc"></span> Roxo</button>
+        <button type="button" class="accent-btn" data-a="yellow" title="Amarelo Ouro"><span style="background:#facc15"></span> Amarelo</button>
+      </div>
       <label style="margin-top:14px">Fonte das respostas</label>
       <div class="seg" id="st-fonte"><button data-f="">Estilo Claude (serifada)</button><button data-f="sans">Sem serifa</button></div>
     </div>
@@ -2091,6 +2099,11 @@ async function renderGeralSection() {
   $$("#st-theme button").forEach((b) => {
     b.classList.toggle("on", b.dataset.t === theme);
     b.onclick = () => { setTheme(b.dataset.t); renderGeralSection(); };
+  });
+  const accent = localStorageGet("accent") || "orange";
+  $$("#st-accent .accent-btn").forEach((b) => {
+    b.classList.toggle("active", b.dataset.a === accent);
+    b.onclick = () => { setAccent(b.dataset.a); renderGeralSection(); };
   });
   const fonte = localStorageGet("fonte") || "";
   $$("#st-fonte button").forEach((b) => {
@@ -2132,6 +2145,11 @@ function setTheme(t) {
   localStorageSet("theme", t);
   if (t) document.documentElement.dataset.theme = t;
   else delete document.documentElement.dataset.theme;
+}
+function setAccent(a) {
+  a = a || "orange";
+  localStorageSet("accent", a);
+  document.documentElement.dataset.accent = a;
 }
 
 /* ------------------------------------------------------------------ tempo real */
@@ -2565,6 +2583,7 @@ function bind() {
 }
 
 (async function init() {
+  setAccent(localStorageGet("accent") || "orange");
   setTheme(localStorageGet("theme") || "");
   setFonte(localStorageGet("fonte") || "");
   bind();
