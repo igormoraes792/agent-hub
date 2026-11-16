@@ -569,6 +569,14 @@ label > .input, label > select, label > textarea, label > .row { margin-top: 4px
 
 .side-foot { padding: 10px 8px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 4px; }
 .group-label { font-size: 11.5px; font-weight: 600; color: var(--muted); padding: 10px 10px 4px; text-transform: uppercase; letter-spacing: .05em; }
+.group-label.section-toggle { padding: 10px 6px 4px 10px; margin-top: 2px; }
+.group-label .grp-count, #archived-count { font-weight: 500; opacity: .75; }
+
+/* Arquivados: abaixo dos agentes, recolhida por padrão */
+.side-archived { padding: 0 8px 6px; border-bottom: 1px solid var(--border); }
+#side-archived-list { max-height: 28vh; overflow-y: auto; padding-bottom: 4px; }
+#side-archived-list .chat-item { opacity: .8; }
+#side-archived-list .chat-item:hover, #side-archived-list .chat-item.active { opacity: 1; }
 
 /* Área Principal */
 #main { flex: 1; min-width: 0; display: flex; flex-direction: column; }

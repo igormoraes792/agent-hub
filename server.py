@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parent
 PORT = int(os.environ.get("AGENT_HUB_PORT", "8787"))
 ALLOWED_ORIGINS = {f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"}
 
-CHAT_FIELDS = ("title", "model", "effort", "permission_mode", "sandbox", "approval_policy", "cwd", "agent_id", "pinned")
+CHAT_FIELDS = ("title", "model", "effort", "permission_mode", "sandbox", "approval_policy", "cwd", "agent_id", "pinned", "archived")
 AGENT_FIELDS = ("name", "description", "provider", "model", "effort", "prompt", "welcome", "tools", "disallowed_tools",
                 "permission_mode", "sandbox", "approval_policy", "cwd", "subagents", "color")
 
@@ -431,7 +431,10 @@ async def update_chat(chat_id: str, body: dict):
         raise HTTPException(400, "A pasta não pode mudar depois que a conversa começou. Crie um novo chat.")
     if "title" in changes:
         changes["auto_title"] = False
-    chat = store.chats.update(chat_id, changes)
+    if "archived" in changes:
+        changes["archived"] = bool(changes["archived"])
+    # arquivar/desarquivar não conta como atividade: o chat volta para o mesmo lugar da lista
+    chat = store.chats.update(chat_id, changes, touch=set(changes) != {"archived"})
     session = manager.sessions.get(chat_id)
     if session and set(changes) & {"model", "effort", "permission_mode", "sandbox", "approval_policy"}:
         await session.apply_settings()
@@ -590,12 +593,13 @@ async def chat_send(chat_id: str, body: dict):
     images, documentos = await asyncio.to_thread(_salvar_anexos, chat_id, body.get("attachments") or [])
     if not text and not images and not documentos:
         raise HTTPException(400, "mensagem vazia")
+    volta = {"archived": False} if chat.get("archived") else {}  # mensagem nova tira o chat dos arquivados
     if chat.get("auto_title"):
         padrao = f"Análise de {documentos[0]['name']}" if documentos else "Análise de imagem"
         title = re.sub(r"\s+", " ", text)[:60] or padrao[:60]
-        chat = store.chats.update(chat_id, {"title": title, "auto_title": False})
+        chat = store.chats.update(chat_id, {"title": title, "auto_title": False, **volta})
     else:
-        chat = store.chats.update(chat_id, {})  # atualiza updated_at para subir na lista
+        chat = store.chats.update(chat_id, volta)  # atualiza updated_at para subir na lista
     bus.publish({"type": "chat_updated", "chat": _chat_out(chat)})
     session = manager.get(chat_id)
     asyncio.create_task(session.send(text, images, documentos, _bloco_documentos(documentos)))

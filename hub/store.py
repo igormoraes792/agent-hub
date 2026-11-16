@@ -57,13 +57,14 @@ class Collection:
             _write_json(self.path, items)
             return item
 
-    def update(self, item_id: str, changes: dict) -> dict | None:
+    def update(self, item_id: str, changes: dict, touch: bool = True) -> dict | None:
+        """touch=False grava sem mexer em updated_at (ex.: arquivar não sobe o chat na lista)."""
         with _lock:
             items = self.all()
             for i, x in enumerate(items):
                 if x["id"] == item_id:
                     changes = {k: v for k, v in changes.items() if k not in ("id", "created_at")}
-                    items[i] = {**x, **changes, "updated_at": _now()}
+                    items[i] = {**x, **changes, "updated_at": _now() if touch else x.get("updated_at", _now())}
                     _write_json(self.path, items)
                     return items[i]
             return None

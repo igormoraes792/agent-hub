@@ -142,29 +142,73 @@ function renderChatList() {
   list.innerHTML = "";
   const agentsById = Object.fromEntries(S.agents.map((a) => [a.id, a]));
   const groups = { "Hoje": [], "Últimos 7 dias": [], "Anteriores": [] };
+  const arquivados = [];
   const now = Date.now() / 1000;
   for (const c of S.chats) {
     if (q && !c.title.toLowerCase().includes(q)) continue;
+    if (c.archived) { arquivados.push(c); continue; }
     const age = now - (c.updated_at || 0);
     (age < 86400 ? groups["Hoje"] : age < 7 * 86400 ? groups["Últimos 7 dias"] : groups["Anteriores"]).push(c);
   }
   for (const [label, items] of Object.entries(groups)) {
     if (!items.length) continue;
-    list.append(h("div", { class: "group-label" }, esc(label)));
-    for (const c of items) {
-      const agent = agentsById[c.agent_id];
-      const waiting = (S.pending[c.id] || []).length > 0;
-      const st = waiting ? "waiting" : c.status;
-      const el = h("a", { class: `chat-item ${c.id === S.chatId && S.view === "chat" ? "active" : ""}`, href: `#/chat/${c.id}`, title: c.title },
-        `<span class="dot ${c.provider}"></span>
-         <div class="t">${esc(c.title)}${agent ? `<div class="sub">🤖 ${esc(agent.name)}</div>` : ""}</div>
-         <span class="st ${st}" title="${st === "running" ? "Análise em andamento" : st === "waiting" ? "Aguardando sua aprovação" : ""}"></span>`);
-      el.addEventListener("contextmenu", (e) => { e.preventDefault(); openChatMenu(c, e.clientX, e.clientY); });
-      list.append(el);
-    }
+    // cada período recolhe como a seção de agentes; a escolha fica guardada neste navegador
+    const recolhido = S.gruposRecolhidos.includes(label);
+    const tit = h("div", { class: `group-label section-toggle ${recolhido ? "collapsed" : ""}`, role: "button", tabindex: "0",
+                           title: "Mostrar/ocultar", onclick: () => alternarGrupo(label) },
+      `<span class="chev">▾</span> ${esc(label)} <span class="grp-count">(${items.length})</span>`);
+    tit.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); alternarGrupo(label); } });
+    list.append(tit);
+    if (recolhido) continue;
+    for (const c of items) list.append(itemChat(c, agentsById));
   }
   if (!list.children.length) list.append(h("div", { class: "muted small", style: "padding:10px" }, q ? "Nada encontrado." : "Nenhum chat ainda."));
+  renderArquivados(arquivados, agentsById, q);
   renderSideAgents();  // o ícone de carregamento dos agentes acompanha o estado dos chats
+}
+
+function itemChat(c, agentsById) {
+  const agent = agentsById[c.agent_id];
+  const waiting = (S.pending[c.id] || []).length > 0;
+  const st = waiting ? "waiting" : c.status;
+  const el = h("a", { class: `chat-item ${c.id === S.chatId && S.view === "chat" ? "active" : ""}`, href: `#/chat/${c.id}`, title: c.title },
+    `<span class="dot ${c.provider}"></span>
+     <div class="t">${esc(c.title)}${agent ? `<div class="sub">🤖 ${esc(agent.name)}</div>` : ""}</div>
+     <span class="st ${st}" title="${st === "running" ? "Análise em andamento" : st === "waiting" ? "Aguardando sua aprovação" : ""}"></span>`);
+  el.addEventListener("contextmenu", (e) => { e.preventDefault(); openChatMenu(c, e.clientX, e.clientY); });
+  return el;
+}
+
+S.gruposRecolhidos = (() => { try { return JSON.parse(localStorageGet("gruposRecolhidos") || "[]"); } catch { return []; } })();
+function alternarGrupo(label) {
+  const i = S.gruposRecolhidos.indexOf(label);
+  if (i >= 0) S.gruposRecolhidos.splice(i, 1); else S.gruposRecolhidos.push(label);
+  localStorageSet("gruposRecolhidos", JSON.stringify(S.gruposRecolhidos));
+  renderChatList();
+}
+
+/* Seção "Arquivados" abaixo dos agentes: começa recolhida; na busca, abre sozinha se achar algo arquivado. */
+S.archivedCollapsed = true;
+function renderArquivados(itens, agentsById, q) {
+  const total = S.chats.filter((c) => c.archived).length;
+  const recolhido = S.archivedCollapsed && !(q && itens.length);
+  $("#archived-toggle").classList.toggle("collapsed", recolhido);
+  $("#archived-count").textContent = total ? `(${total})` : "";
+  const list = $("#side-archived-list");
+  list.classList.toggle("hidden", recolhido);
+  list.innerHTML = "";
+  if (!itens.length) {
+    list.append(h("div", { class: "muted small", style: "padding:6px 12px" }, q && total ? "Nada encontrado nos arquivados." : "Nenhum chat arquivado. Clique com o botão direito num chat e escolha Arquivar."));
+    return;
+  }
+  for (const c of itens) list.append(itemChat(c, agentsById));
+}
+
+async function arquivarChat(chat, arquivar) {
+  try {
+    upsertChat(await api("PATCH", `/api/chats/${chat.id}`, { archived: arquivar }));
+    toast(arquivar ? `"${chat.title}" foi para Arquivados.` : `"${chat.title}" voltou para a lista de chats.`);
+  } catch (e) { toast(e.message); }
 }
 
 /* Menu do botão direito sobre um chat da barra lateral. */
@@ -174,6 +218,8 @@ function openChatMenu(chat, x, y) {
   const item = (label, fn, cls = "") => menu.append(h("button", { class: cls, role: "menuitem", onclick: () => { closeChatMenu(); fn(); } }, label));
   item("Abrir", () => (location.hash = `#/chat/${chat.id}`));
   item("✏️ Renomear", () => renameChat(chat));
+  if (chat.archived) item("📤 Desarquivar", () => arquivarChat(chat, false));
+  else item("🗄 Arquivar", () => arquivarChat(chat, true));
   menu.append(h("div", { class: "sep" }));
   item("🗑 Excluir chat", () => deleteChat(chat), "danger");
   menu.classList.remove("hidden");
@@ -2512,6 +2558,10 @@ function bind() {
   $("#btn-new-chat").onclick = () => { if (location.hash === "#/novo") openStart(null, null); else location.hash = "#/novo"; };
   $("#agents-toggle").onclick = () => { S.agentsCollapsed = !S.agentsCollapsed; renderSideAgents(); };
   $("#agents-add").onclick = (e) => { e.stopPropagation(); location.hash = "#/settings/agentes/new"; };
+  const alternarArquivados = () => { S.archivedCollapsed = !S.archivedCollapsed; renderChatList(); };
+  $("#archived-toggle").onclick = alternarArquivados;
+  $("#archived-toggle").addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); alternarArquivados(); } });
+  $("#side-archived-list").addEventListener("scroll", closeChatMenu);
   $("#start-send").onclick = startSend;
   ligarAnexos("chat", $("#input"), $("#btn-attach"), $("#file-input"), $("#view-chat"));
   ligarAnexos("start", $("#start-input"), $("#btn-start-attach"), $("#start-file-input"), $("#view-start"));
