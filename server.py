@@ -13,6 +13,43 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+
+def _atualizar_path() -> None:
+    """Acrescenta ao PATH o que está no registro do Windows (usuário + máquina). O servidor herda o ambiente de quem o
+    abriu, e o reinício pela tela copia o do processo anterior: sem isto, um programa instalado depois (ex.: Node.js
+    para um MCP) só seria encontrado fechando o hub e o VS Code."""
+    if sys.platform != "win32":
+        return
+    import winreg
+    atuais = os.environ.get("PATH", "").split(os.pathsep)
+    vistos = {p.rstrip("\\").lower() for p in atuais if p}
+    novos = []
+    for raiz, chave in ((winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+                        (winreg.HKEY_CURRENT_USER, "Environment")):
+        try:
+            with winreg.OpenKey(raiz, chave) as k:
+                valor = winreg.QueryValueEx(k, "Path")[0]
+        except OSError:
+            continue
+        for p in os.path.expandvars(valor).split(os.pathsep):
+            if p and p.rstrip("\\").lower() not in vistos:
+                vistos.add(p.rstrip("\\").lower())
+                novos.append(p)
+    if novos:
+        os.environ["PATH"] = os.pathsep.join([*atuais, *novos])
+    # variáveis do usuário criadas depois que o hub abriu (ex.: desligar telemetria de um plugin): só acrescenta
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as k:
+            for i in range(winreg.QueryInfoKey(k)[1]):
+                nome, valor, _tipo = winreg.EnumValue(k, i)
+                if nome.lower() != "path" and nome not in os.environ and isinstance(valor, str):
+                    os.environ[nome] = os.path.expandvars(valor)
+    except OSError:
+        pass
+
+
+_atualizar_path()
+
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
