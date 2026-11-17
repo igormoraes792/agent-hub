@@ -417,6 +417,27 @@ label > .input, label > select, label > textarea, label > .row { margin-top: 4px
   padding: 7px 12px;
 }
 .side-head { padding: 14px 12px 10px; display: flex; flex-direction: column; gap: 10px; }
+
+/* Busca: botão dentro do campo liga a busca no texto das conversas */
+.search-wrap { position: relative; }
+.search-wrap .input.search { width: 100%; padding-right: 38px; box-sizing: border-box; }
+.search-mode {
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  width: 28px; height: 26px; display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--muted); cursor: pointer;
+  transition: all .15s;
+}
+.search-mode:hover { color: var(--text-heading); background: var(--pill-hover); }
+.search-mode.on { color: var(--accent); background: var(--accent-subtle); border-color: var(--accent); }
+.search-status { font-size: 11px; color: var(--muted); margin: -4px 4px 0; }
+.chat-item .sub.trecho {
+  white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  margin-top: 2px; line-height: 1.35;
+}
+.chat-item .sub.trecho b { font-weight: 600; }
+.chat-item .sub.trecho mark { background: var(--accent-subtle); color: var(--text-heading); border-radius: 3px; padding: 0 1px; }
+.chat-item .sub.trecho-mais { font-style: italic; opacity: .8; }
+.msg.busca-achado { outline: 2px solid var(--accent); outline-offset: 6px; border-radius: 10px; transition: outline-color .6s; }
 .brand {
   font-weight: 700;
   font-size: 16px;

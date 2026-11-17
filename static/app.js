@@ -136,8 +136,14 @@ function show(view) {
 }
 
 /* ------------------------------------------------------------------ lista de chats */
+/* Sem diferenciar maiúsculas nem acentos ("apresentacao" acha "Apresentação"). */
+function norm(s) { return (s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase(); }
+
 function renderChatList() {
-  const q = $("#chat-search").value.trim().toLowerCase();
+  const q = $("#chat-search").value.trim();
+  const termos = norm(q).split(/\s+/).filter(Boolean);
+  // resultado da busca no texto (só quando o botão está ligado e já respondeu para este mesmo texto)
+  const noTexto = S.busca.ligada && S.busca.q === q ? S.busca.chats || {} : {};
   const list = $("#chat-list");
   list.innerHTML = "";
   const agentsById = Object.fromEntries(S.agents.map((a) => [a.id, a]));
@@ -145,7 +151,7 @@ function renderChatList() {
   const arquivados = [];
   const now = Date.now() / 1000;
   for (const c of S.chats) {
-    if (q && !c.title.toLowerCase().includes(q)) continue;
+    if (termos.length && !termos.every((t) => norm(c.title).includes(t)) && !noTexto[c.id]) continue;
     if (c.archived) { arquivados.push(c); continue; }
     const age = now - (c.updated_at || 0);
     (age < 86400 ? groups["Hoje"] : age < 7 * 86400 ? groups["Últimos 7 dias"] : groups["Anteriores"]).push(c);
@@ -160,23 +166,87 @@ function renderChatList() {
     tit.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); alternarGrupo(label); } });
     list.append(tit);
     if (recolhido) continue;
-    for (const c of items) list.append(itemChat(c, agentsById));
+    for (const c of items) list.append(itemChat(c, agentsById, noTexto[c.id], termos));
   }
   if (!list.children.length) list.append(h("div", { class: "muted small", style: "padding:10px" }, q ? "Nada encontrado." : "Nenhum chat ainda."));
-  renderArquivados(arquivados, agentsById, q);
+  renderArquivados(arquivados, agentsById, q, noTexto, termos);
   renderSideAgents();  // o ícone de carregamento dos agentes acompanha o estado dos chats
 }
 
-function itemChat(c, agentsById) {
+function itemChat(c, agentsById, achado = null, termos = []) {
   const agent = agentsById[c.agent_id];
   const waiting = (S.pending[c.id] || []).length > 0;
   const st = waiting ? "waiting" : c.status;
+  const trechos = achado ? achado.trechos.map((t) => `<div class="sub trecho"><b>${esc(t.quem)}:</b> ${trechoHtml(t)}</div>`).join("")
+    + (achado.total > achado.trechos.length ? `<div class="sub trecho-mais">+${achado.total - achado.trechos.length} mensage${achado.total - achado.trechos.length > 1 ? "ns" : "m"}</div>` : "") : "";
   const el = h("a", { class: `chat-item ${c.id === S.chatId && S.view === "chat" ? "active" : ""}`, href: `#/chat/${c.id}`, title: c.title },
     `<span class="dot ${c.provider}"></span>
-     <div class="t">${esc(c.title)}${agent ? `<div class="sub">🤖 ${esc(agent.name)}</div>` : ""}</div>
+     <div class="t">${esc(c.title)}${agent ? `<div class="sub">🤖 ${esc(agent.name)}</div>` : ""}${trechos}</div>
      <span class="st ${st}" title="${st === "running" ? "Análise em andamento" : st === "waiting" ? "Aguardando sua aprovação" : ""}"></span>`);
   el.addEventListener("contextmenu", (e) => { e.preventDefault(); openChatMenu(c, e.clientX, e.clientY); });
+  if (achado) el.addEventListener("click", () => { S.destaque = termos; });  // ao abrir, rola até a mensagem encontrada
   return el;
+}
+
+/* Trecho da mensagem com as palavras buscadas em destaque (posições vindas do servidor). */
+function trechoHtml(t) {
+  let html = "", pos = 0;
+  for (const [a, b] of t.marcas) {
+    if (a < pos) continue;
+    html += esc(t.texto.slice(pos, a)) + `<mark>${esc(t.texto.slice(a, b))}</mark>`;
+    pos = b;
+  }
+  return (t.inicio ? "…" : "") + html + esc(t.texto.slice(pos)) + (t.fim ? "…" : "");
+}
+
+/* Busca no texto das conversas: só roda com o botão ligado, 350 ms depois que a digitação para. */
+S.busca = { ligada: false, q: "", chats: null, timer: null, seq: 0 };
+function agendarBuscaConteudo() {
+  clearTimeout(S.busca.timer);
+  const q = $("#chat-search").value.trim();
+  const st = $("#search-status");
+  S.busca.seq++;  // descarta respostas de buscas anteriores
+  if (!S.busca.ligada || q.length < 2) {
+    S.busca.q = ""; S.busca.chats = null;
+    st.textContent = S.busca.ligada ? "Busca no texto ligada: digite ao menos 2 letras." : "";
+    st.classList.toggle("hidden", !S.busca.ligada);
+    return;
+  }
+  st.textContent = "Buscando no texto das conversas…";
+  st.classList.remove("hidden");
+  const seq = S.busca.seq;
+  S.busca.timer = setTimeout(async () => {
+    try {
+      const r = await api("GET", `/api/busca?q=${encodeURIComponent(q)}`);
+      if (seq !== S.busca.seq) return;
+      S.busca.q = q; S.busca.chats = r.chats;
+      const n = Object.keys(r.chats).length;
+      const m = Object.values(r.chats).reduce((s, v) => s + v.total, 0);
+      st.textContent = n ? `${m} mensage${m > 1 ? "ns" : "m"} em ${n} conversa${n > 1 ? "s" : ""}` : "Nada no texto das conversas.";
+      renderChatList();
+    } catch (e) { if (seq === S.busca.seq) st.textContent = e.message; }
+  }, 350);
+}
+function alternarBuscaConteudo() {
+  S.busca.ligada = !S.busca.ligada;
+  const b = $("#search-content");
+  b.classList.toggle("on", S.busca.ligada);
+  b.setAttribute("aria-pressed", S.busca.ligada);
+  $("#chat-search").placeholder = S.busca.ligada ? "Buscar no texto dos chats…" : "Buscar chats…";
+  $("#chat-search").focus();
+  agendarBuscaConteudo();
+  renderChatList();
+}
+
+/* Ao abrir um chat pela busca no texto: rola até a primeira mensagem com as palavras e pisca em volta dela. */
+function destacarAchado(wrap, termos) {
+  const alvo = [...wrap.querySelectorAll(".msg.user, .msg.assistant")]
+    .find((m) => { const n = norm(m.textContent); return termos.every((t) => n.includes(t)); });
+  if (!alvo) return false;
+  alvo.scrollIntoView({ block: "center" });
+  alvo.classList.add("busca-achado");
+  setTimeout(() => alvo.classList.remove("busca-achado"), 2600);
+  return true;
 }
 
 S.gruposRecolhidos = (() => { try { return JSON.parse(localStorageGet("gruposRecolhidos") || "[]"); } catch { return []; } })();
@@ -189,7 +259,7 @@ function alternarGrupo(label) {
 
 /* Seção "Arquivados" abaixo dos agentes: começa recolhida; na busca, abre sozinha se achar algo arquivado. */
 S.archivedCollapsed = true;
-function renderArquivados(itens, agentsById, q) {
+function renderArquivados(itens, agentsById, q, noTexto = {}, termos = []) {
   const total = S.chats.filter((c) => c.archived).length;
   const recolhido = S.archivedCollapsed && !(q && itens.length);
   $("#archived-toggle").classList.toggle("collapsed", recolhido);
@@ -201,7 +271,7 @@ function renderArquivados(itens, agentsById, q) {
     list.append(h("div", { class: "muted small", style: "padding:6px 12px" }, q && total ? "Nada encontrado nos arquivados." : "Nenhum chat arquivado. Clique com o botão direito num chat e escolha Arquivar."));
     return;
   }
-  for (const c of itens) list.append(itemChat(c, agentsById));
+  for (const c of itens) list.append(itemChat(c, agentsById, noTexto[c.id], termos));
 }
 
 async function arquivarChat(chat, arquivar) {
@@ -281,8 +351,10 @@ async function openChat(id) {
   requestAnimationFrame(() => wrap.classList.remove("no-anim"));
   renderChatHeader();
   renderApprovals();
-  scrollDown(true);
-  $("#input").focus();
+  const termos = S.destaque;
+  S.destaque = null;
+  if (!(termos && termos.length && destacarAchado(wrap, termos))) scrollDown(true);
+  $("#input").focus({ preventScroll: true });
 }
 
 /* Rascunho por chat: a caixa de texto é uma só, então o que não foi enviado fica guardado ao trocar de chat. */
@@ -2588,7 +2660,8 @@ function bind() {
   $("#btn-settings").onclick = () => (location.hash = "#/settings");
   $("#btn-consumo").onclick = () => (location.hash = "#/consumo");
   $("#btn-new-agent").onclick = () => editAgent(null);
-  $("#chat-search").oninput = renderChatList;
+  $("#chat-search").oninput = () => { renderChatList(); agendarBuscaConteudo(); };
+  $("#search-content").onclick = alternarBuscaConteudo;
   $("#btn-menu").onclick = () => $("#sidebar").classList.toggle("open");
   $$("[data-action=menu]").forEach((b) => (b.onclick = () => $("#sidebar").classList.toggle("open")));
 

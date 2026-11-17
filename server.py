@@ -17,7 +17,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from hub import accounts, consumo, importer, mcp_health, office, providers, store
+from hub import accounts, busca, consumo, importer, mcp_health, office, providers, store
 from hub.janela import abrir_janela
 from hub.sessions import AGENT_CONTROLLED, bus, codex_server, effective_chat, manager
 
@@ -377,6 +377,16 @@ def _chat_out(chat: dict) -> dict:
 async def list_chats():
     chats = sorted(store.chats.all(), key=lambda c: c.get("updated_at", 0), reverse=True)
     return [_chat_out(c) for c in chats]
+
+
+@app.get("/api/busca")
+async def buscar_conteudo(q: str = ""):
+    """Busca no texto das conversas; só roda quando o usuário liga a busca no conteúdo."""
+    q = q.strip()[:200]
+    if len(q) < 2:
+        return {"termos": [], "chats": {}}
+    ids = [c["id"] for c in store.chats.all()]
+    return await asyncio.to_thread(busca.buscar, q, ids)
 
 
 @app.post("/api/chats")
