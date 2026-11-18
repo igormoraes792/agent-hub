@@ -15,6 +15,12 @@ Central local de chats com **Google Antigravity**, **Claude** e **Codex**: vári
 
 Chats e agentes ficam na pasta `data/`, que **não vai para o GitHub**. Para levar seus agentes, copie `data/agents.json` para a pasta `data/` da outra máquina.
 
+**Logins e contas:** o projeto não traz login nenhum.
+- Na primeira conversa com cada IA (Claude, Codex ou Antigravity), o hub pede que você entre na sua conta pelo navegador ou informe uma chave de API.
+- Os logins ficam nas pastas de cada IA no seu usuário (`~/.claude`, `~/.codex`, `~/.gemini`). As contas salvas e as chaves de API ficam em `data/`.
+- Nada disso vai para o GitHub, e um `git pull` não apaga essas pastas.
+- Só **não** rode `git clean -x`: esse comando apaga arquivos ignorados, inclusive a pasta `data/`.
+
 **Criador de Agentes:** o repositório traz o agente que monta outros agentes por conversa. Ele faz as perguntas básicas, propõe a configuração e só cadastra depois do seu ok. Para colocá-lo no seu hub, com o hub aberto, rode na pasta do Agent Hub:
 
 ```

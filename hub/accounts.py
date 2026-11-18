@@ -52,6 +52,26 @@ def _write_profiles(data: dict) -> None:
     PROFILES_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def modelos_padrao() -> dict:
+    """Modelo com que os chats novos abrem em cada IA, escolhido em Configurações → Contas ("" = padrão da própria IA)."""
+    padrao = _read_settings().get("modelos_padrao")
+    return padrao if isinstance(padrao, dict) else {}
+
+
+def definir_modelo_padrao(provider: str, modelo: str | None) -> dict:
+    if provider not in ("claude", "codex", "antigravity"):
+        raise ValueError(f"Provedor {provider} desconhecido.")
+    settings = _read_settings()
+    padrao = settings.get("modelos_padrao") if isinstance(settings.get("modelos_padrao"), dict) else {}
+    if modelo:
+        padrao[provider] = str(modelo)[:100]
+    else:
+        padrao.pop(provider, None)  # volta ao padrão da própria IA
+    settings["modelos_padrao"] = padrao
+    _write_settings(settings)
+    return padrao
+
+
 def find_bundled_claude() -> str | None:
     """Procura o executável do Claude (o do SDK no .venv ou no PATH)."""
     venv_claude = Path(__file__).resolve().parent.parent / ".venv" / "Lib" / "site-packages" / "claude_agent_sdk" / "_bundled" / "claude.exe"
@@ -143,6 +163,28 @@ def get_antigravity_account(meta_info: dict | None = None) -> dict:
     }
 
 
+_STATUS_CLAUDE: dict = {"ts": 0.0, "dados": None}
+
+
+def _claude_auth_status() -> dict | None:
+    """Login real do Claude (`claude auth status`): {"loggedIn": bool, "email": ...}. Sem isto, o hub achava que
+    estava conectado só porque o programa existe, e numa máquina nova o primeiro chat falhava em vez de pedir login.
+    Cache de 5 s: a tela consulta a cada 2,5 s enquanto espera o login no navegador."""
+    if time.time() - _STATUS_CLAUDE["ts"] < 5:
+        return _STATUS_CLAUDE["dados"]
+    dados = None
+    exe = find_bundled_claude()
+    if exe:
+        try:
+            r = subprocess.run([exe, "auth", "status"], capture_output=True, text=True, encoding="utf-8",
+                               errors="replace", timeout=20, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            dados = json.loads(r.stdout[r.stdout.find("{"):]) if "{" in r.stdout else None
+        except Exception:  # noqa: BLE001 - sem resposta: decide pelos sinais antigos
+            dados = None
+    _STATUS_CLAUDE.update(ts=time.time(), dados=dados)
+    return dados
+
+
 def get_claude_account(meta_info: dict | None = None) -> dict:
     claude_json = HOME / ".claude.json"
     data = {}
@@ -166,7 +208,10 @@ def get_claude_account(meta_info: dict | None = None) -> dict:
         models_count = len(meta_info["claude"].get("models", []))
         error = meta_info["claude"].get("error")
 
-    status = "connected" if (version or user_id or custom_key) and not error else ("error" if error else "disconnected")
+    auth = _claude_auth_status()
+    # sem resposta do `auth status`, mantém o critério antigo para não bloquear quem já usa
+    logado = bool(auth.get("loggedIn")) if isinstance(auth, dict) else bool(version or user_id)
+    status = "connected" if (logado or custom_key) and not error else ("error" if error else "disconnected")
 
     profiles = _read_profiles().get("claude", [])
 
@@ -178,6 +223,8 @@ def get_claude_account(meta_info: dict | None = None) -> dict:
         "status": status,
         "auth_type": "api_key" if custom_key else "cli_login",
         "user_id": user_id,
+        "email": (auth or {}).get("email") if isinstance(auth, dict) else None,
+        "org": (auth or {}).get("orgName") if isinstance(auth, dict) else None,
         "first_start": first_start,
         "version": version,
         "error": error,
@@ -327,6 +374,8 @@ def iniciar_login(provider: str) -> dict:
     """Dispara a janela interativa de login para o provedor escolhido sem precisar de VS Code."""
     from .providers import find_antigravity, find_codex
 
+    _STATUS_CLAUDE["ts"] = 0.0  # a próxima consulta já pega o login novo
+
     if provider == "antigravity":
         agy_path = find_antigravity()
         if not agy_path:
@@ -355,6 +404,8 @@ def iniciar_login(provider: str) -> dict:
 def fazer_logout(provider: str) -> dict:
     """Desconecta a conta ativa do provedor."""
     from .providers import find_codex
+
+    _STATUS_CLAUDE["ts"] = 0.0
 
     if provider == "antigravity":
         set_account_key("antigravity", None)

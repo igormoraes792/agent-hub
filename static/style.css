@@ -1466,8 +1466,27 @@ details.instr .md { padding: 6px 14px 12px; max-height: 320px; overflow-y: auto;
   .consumo-page .cs-kpis { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
 }
 
-.uso-selos { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; font-size: 11px; }
-#btn-consumo { display: flex; align-items: center; gap: 6px; }
+/* Uso das cotas: balão ao lado do botão "Consumo", só ao passar o mouse (ou com foco do teclado) */
+#btn-consumo { display: flex; align-items: center; gap: 6px; position: relative; }
+.uso-selos {
+  position: absolute; left: calc(100% + 10px); bottom: -4px;
+  display: none; flex-direction: column; align-items: stretch; gap: 6px;
+  min-width: 150px; padding: 10px 12px; font-size: 12px; text-align: left;
+  background: var(--modal-bg); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .35); z-index: 60; pointer-events: none;
+}
+#btn-consumo:hover .uso-selos:not(:empty), #btn-consumo:focus-visible .uso-selos:not(:empty) { display: flex; }
+.uso-selos .uso-tit { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; }
+.uso-selos .uso-selo { text-align: center; }
+/* ponto de aviso no botão quando alguma cota passa de 75% (amarelo) ou 90% (vermelho) */
+#btn-consumo.uso-medio::after, #btn-consumo.uso-alto::after {
+  content: ""; width: 8px; height: 8px; border-radius: 50%; margin-left: auto; flex-shrink: 0;
+}
+#btn-consumo.uso-medio::after { background: var(--warn); }
+#btn-consumo.uso-alto::after { background: var(--danger); }
+@media (max-width: 760px) {  /* barra lateral em tela cheia: o balão abre acima do botão */
+  .uso-selos { left: 8px; bottom: calc(100% + 6px); }
+}
 .uso-selo {
   padding: 1px 7px;
   border-radius: 99px;
@@ -1601,6 +1620,13 @@ details.instr .md { padding: 6px 14px 12px; max-height: 320px; overflow-y: auto;
   box-sizing: border-box;
 }
 .modal-box.modal-lg { max-width: 880px; }
+.account-model-box { margin: 14px 0 4px; }
+.account-model-label { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; font-weight: 600; margin: 0; }
+.account-model-label select { min-width: 240px; flex: 1; max-width: 360px; }
+.account-model-box .hint { margin-top: 4px; }
+.modal-box.login-box { max-width: 480px; }
+.login-box .login-status { min-height: 18px; margin: -8px 0 14px; }
+.login-acoes { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
 .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
 .modal-head h3 { font-size: 19px; color: var(--text-heading); }
 .modal-sub { color: var(--muted); font-size: 13.5px; margin-bottom: 22px; line-height: 1.5; }

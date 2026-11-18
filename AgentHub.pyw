@@ -13,7 +13,7 @@ from pathlib import Path
 
 PASTA = Path(__file__).resolve().parent
 sys.path.insert(0, str(PASTA))
-from hub.janela import abrir_janela, marcar_atalho  # noqa: E402
+from hub.janela import abrir_janela, icone, marcar_atalho  # noqa: E402
 
 PORTA = int(os.environ.get("AGENT_HUB_PORT", "8787"))
 URL = f"http://127.0.0.1:{PORTA}"
@@ -51,11 +51,11 @@ def criar_atalho() -> None:
     ps = (
         "$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:AH_LNK);"
         "$s.TargetPath = $env:AH_PYW; $s.Arguments = '\"' + $env:AH_SCRIPT + '\"';"
-        "$s.WorkingDirectory = $env:AH_PASTA; $s.IconLocation = $env:AH_ICO + ',0';"
+        "$s.WorkingDirectory = $env:AH_PASTA; $s.IconLocation = $env:AH_ICO;"
         "$s.Description = 'Abre o Agent Hub'; $s.Save()"
     )
     env = {**os.environ, "AH_LNK": str(PASTA / "Agent Hub.lnk"), "AH_PYW": str(PASTA / ".venv" / "Scripts" / "pythonw.exe"),
-           "AH_SCRIPT": str(PASTA / "AgentHub.pyw"), "AH_PASTA": str(PASTA), "AH_ICO": str(PASTA / "static" / "icone.ico")}
+           "AH_SCRIPT": str(PASTA / "AgentHub.pyw"), "AH_PASTA": str(PASTA), "AH_ICO": icone()}  # na cor escolhida no app
     subprocess.run(["powershell", "-NoProfile", "-Command", ps], env=env, check=True)
     marcar_atalho(PASTA / "Agent Hub.lnk")
 

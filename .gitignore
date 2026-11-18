@@ -1,5 +1,14 @@
 .venv/
+# contas, chaves de API, chats e configurações locais: ficam só nesta máquina (um pull nunca apaga)
 data/
+# credenciais soltas: nunca no repositório
+.env
+.env.*
+*.pat
+*.pem
+*.key
+credentials*.xml
+*.credentials.json
 __pycache__/
 *.pyc
 # agentes: permissões locais do Claude Code

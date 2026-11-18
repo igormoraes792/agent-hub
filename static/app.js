@@ -1167,7 +1167,7 @@ function renderStart() {
         <details class="opts"><summary>Modelo, permissões e pasta</summary>
           ${provider === "antigravity" && !S.meta?.antigravity?.available ? `<div class="err-box">agy.exe não encontrado. Instale o Google Antigravity ou defina AGY_PATH.</div>` : ""}
           ${provider === "codex" && !S.meta?.codex?.available ? `<div class="err-box">codex.exe não encontrado. Instale a extensão do Codex no VS Code ou defina CODEX_PATH.</div>` : ""}
-          <div class="grid2">${providerFieldsHtml("ds", provider, provider === "claude" ? PADRAO_CHAT_CLAUDE : (provider === "antigravity" ? { model: "gemini-3.8-flash-high", effort: "high" } : {}))}</div>
+          <div class="grid2">${providerFieldsHtml("ds", provider, padraoChat(provider))}</div>
           <label>Pasta de trabalho ${folderFieldHtml("ds-cwd", cwd)}</label>
           <div class="hint">A pasta não pode ser trocada depois da primeira mensagem. Dica: para instruções e configurações salvas, escolha um agente na barra lateral.</div>
         </details>
@@ -1193,6 +1193,30 @@ function saudacao() {
 
 /* Chat livre novo no Claude começa no Opus com raciocínio alto (dá para trocar em "Modelo, permissões e pasta"). */
 const PADRAO_CHAT_CLAUDE = { model: "opus", effort: "high" };
+const PADRAO_CHAT_ANTIGRAVITY = { model: "gemini-3.8-flash-high", effort: "high" };
+
+/* Modelo e esforço com que um chat novo abre: o modelo escolhido em Configurações → Contas, senão o padrão do hub. */
+function padraoChat(provider) {
+  const base = provider === "claude" ? PADRAO_CHAT_CLAUDE : (provider === "antigravity" ? PADRAO_CHAT_ANTIGRAVITY : {});
+  const escolhido = S.meta?.modelosPadrao?.[provider];
+  return escolhido ? { ...base, model: escolhido } : base;
+}
+
+/* Seletor "Modelo padrão dos chats novos" no cartão de cada conta. */
+function caixaModeloPadrao(provider) {
+  const fixo = provider === "claude" ? PADRAO_CHAT_CLAUDE.model : (provider === "antigravity" ? PADRAO_CHAT_ANTIGRAVITY.model : null);
+  let opcoes = modelOptions(provider);  // no Codex já vem "Padrão do Codex (modelo do config.toml)"
+  if (fixo) {
+    const rotulo = opcoes.find((o) => o.value === fixo)?.label || fixo;
+    opcoes = [{ value: "", label: `Padrão do hub (${rotulo})` }, ...opcoes];
+  }
+  const atual = S.meta?.modelosPadrao?.[provider] || "";
+  return `<div class="account-model-box">
+      <label class="account-model-label">Modelo padrão dos chats novos
+        ${selectHtml(`padrao-${provider}`, opcoes, atual, `class="sel-modelo-padrao" data-p="${provider}"`)}</label>
+      <div class="hint">Vale para os próximos chats do ${esc(NOME_IA[provider] || provider)}. Chats já abertos e agentes mantêm o modelo deles.</div>
+    </div>`;
+}
 
 /* Etiqueta do modelo dentro da caixa de mensagem da tela de início. */
 function atualizarInfoStart() {
@@ -1206,6 +1230,74 @@ function atualizarInfoStart() {
   $("#start-info").textContent = `${provNome} · ${nome}${esforco ? ` · ${EFFORT_LABEL[esforco] || esforco}` : ""}`;
 }
 
+/* Login por IA: o projeto não traz login nenhum. No primeiro chat com uma IA sem conta conectada nesta máquina,
+   pede o login (ou uma chave de API) antes de enviar, em vez de mandar a mensagem e falhar. */
+const NOME_IA = { claude: "Claude", codex: "Codex", antigravity: "Google Antigravity" };
+
+async function garantirLogin(provider) {
+  let acc;
+  try {
+    const r = await api("GET", "/api/accounts");
+    S.accounts = r.accounts || [];
+    acc = S.accounts.find((a) => a.id === provider);
+  } catch { return true; }  // se a checagem falhar, não impede o envio: o erro real aparece no chat
+  if (!acc || acc.status === "connected") return true;
+  return pedirLogin(provider, acc);
+}
+
+function pedirLogin(provider, acc) {
+  return new Promise((resolve) => {
+    const nome = NOME_IA[provider] || provider;
+    const semPrograma = acc.status === "unavailable" || (provider === "codex" && acc.available === false);
+    const fundo = h("div", { class: "modal-backdrop" });
+    fundo.innerHTML = `<div class="modal-box login-box" role="dialog" aria-modal="true" aria-labelledby="login-tit">
+      <div class="modal-head"><h3 id="login-tit">🔑 Entrar no ${esc(nome)}</h3>
+        <button type="button" class="btn ghost icon" data-a="fechar" title="Fechar">✕</button></div>
+      <div class="modal-sub">${semPrograma
+        ? `O ${esc(nome)} não está instalado neste computador. Instale-o (ou a extensão dele no VS Code) e tente de novo, ou use uma chave de API.`
+        : `Para conversar com o ${esc(nome)}, entre na sua conta. O login abre no navegador e fica salvo só neste computador; ele não vai para o projeto nem para o GitHub.`}</div>
+      <div class="login-status muted small" aria-live="polite"></div>
+      <div class="login-acoes">
+        <button type="button" class="btn ghost" data-a="chave">Usar chave de API</button>
+        <button type="button" class="btn ghost" data-a="fechar">Cancelar</button>
+        ${semPrograma ? "" : `<button type="button" class="btn primary" data-a="entrar">Entrar com o navegador</button>`}
+      </div></div>`;
+    let timer = null;
+    const fim = (ok) => { clearInterval(timer); document.removeEventListener("keydown", esc_); fundo.remove(); resolve(ok); };
+    const esc_ = (e) => { if (e.key === "Escape") fim(false); };
+    document.addEventListener("keydown", esc_);
+    fundo.addEventListener("click", async (e) => {
+      const botao = e.target.closest("[data-a]");
+      const a = botao?.dataset.a;
+      if (e.target === fundo || a === "fechar") return fim(false);
+      if (a === "chave") { fim(false); location.hash = "#/settings/contas"; return; }
+      if (a !== "entrar") return;
+      const st = fundo.querySelector(".login-status");
+      botao.disabled = true;
+      try { await api("POST", "/api/accounts/login", { provider }); }
+      catch (err) { st.textContent = err.message; botao.disabled = false; return; }
+      st.textContent = "Conclua o login na janela que abriu. Quando terminar, sua mensagem é enviada sozinha…";
+      let n = 0;
+      clearInterval(timer);
+      timer = setInterval(async () => {
+        n++;
+        try {
+          const r = await api("GET", "/api/accounts");
+          S.accounts = r.accounts || [];
+          if (S.accounts.find((x) => x.id === provider)?.status === "connected") { toast(`✅ ${nome} conectado.`); fim(true); return; }
+        } catch { /* ainda esperando */ }
+        if (n >= 120) {  // 5 minutos
+          clearInterval(timer);
+          st.textContent = "Não detectei o login em 5 minutos. Tente de novo.";
+          botao.disabled = false;
+        }
+      }, 2500);
+    });
+    document.body.append(fundo);
+    fundo.querySelector(semPrograma ? "[data-a=chave]" : "[data-a=entrar]").focus();
+  });
+}
+
 async function startSend() {
   const input = $("#start-input");
   const text = input.value.trim();
@@ -1216,6 +1308,7 @@ async function startSend() {
   const btn = $("#start-send");
   btn.disabled = true;
   try {
+    if (!(await garantirLogin(agent ? agent.provider : provider))) return;  // sem login: a mensagem fica na caixa
     // Com agente, tudo vem dele (o servidor completa); sem agente, vale o que foi escolhido na tela.
     const body = agent
       ? { agent_id: agent.id, cwd: agent.cwd || localStorageGet("lastCwd") || S.meta.home, greeting: agentGreeting(agent) }
@@ -1708,6 +1801,8 @@ async function renderContas() {
         </div>
       </div>
 
+      ${caixaModeloPadrao("antigravity")}
+
       <div class="account-actions-row">
         <div class="account-actions-left">
           <button type="button" class="btn primary" id="ag-btn-login" title="Conectar ou trocar de conta Google">${antigravity.status === 'connected' ? '🔑 Trocar conta' : '🔑 Conectar conta Google'}</button>
@@ -1775,6 +1870,8 @@ async function renderContas() {
         </div>
       </div>
 
+      ${caixaModeloPadrao("claude")}
+
       <div class="account-actions-row">
         <div class="account-actions-left">
           <button type="button" class="btn primary" id="claude-btn-login" title="Login no navegador para conectar ou trocar de conta">${claude.status === 'connected' ? '🔑 Trocar conta' : '🔑 Conectar conta (Login no Navegador)'}</button>
@@ -1816,7 +1913,7 @@ async function renderContas() {
         </div>
         ${codex.default_model ? `
         <div class="account-kv-item">
-          <span class="k">Modelo Padrão:</span>
+          <span class="k" title="Definido no config.toml do Codex; o hub usa o escolhido em &quot;Modelo padrão dos chats novos&quot;, abaixo">Padrão do Codex:</span>
           <span class="v"><code>${esc(codex.default_model)}</code></span>
         </div>` : ""}
         <div class="account-kv-item">
@@ -1853,6 +1950,8 @@ async function renderContas() {
         </div>
       </div>
 
+      ${caixaModeloPadrao("codex")}
+
       <div class="account-actions-row">
         <div class="account-actions-left">
           <button type="button" class="btn primary" id="codex-btn-login" title="Login no navegador para conectar ou trocar de conta">${codex.status === 'connected' ? '🔑 Trocar conta' : '🔑 Conectar conta (Login no Navegador)'}</button>
@@ -1865,6 +1964,15 @@ async function renderContas() {
       </div>
     </div>
   `;
+
+  // Modelo padrão dos chats novos de cada IA
+  $$(".sel-modelo-padrao").forEach((s) => (s.onchange = async () => {
+    try {
+      const r = await api("POST", "/api/accounts/default-model", { provider: s.dataset.p, model: s.value });
+      if (S.meta) S.meta.modelosPadrao = r.modelosPadrao;
+      toast(`Chats novos do ${NOME_IA[s.dataset.p]} vão abrir em: ${s.selectedOptions[0].textContent}`);
+    } catch (e) { toast(e.message); }
+  }));
 
   // Função auxiliar de monitoramento após iniciar login
   const monitorarLogin = (provider, nomeProvedor) => {
@@ -2264,10 +2372,17 @@ function setTheme(t) {
   if (t) document.documentElement.dataset.theme = t;
   else delete document.documentElement.dataset.theme;
 }
-function setAccent(a) {
+function setAccent(a, aplicarIcone = true) {
   a = a || "orange";
   localStorageSet("accent", a);
   document.documentElement.dataset.accent = a;
+  // ícone da janela (favicon) e, no Windows, dos atalhos do hub e da barra de tarefas na mesma cor
+  if (!aplicarIcone) return;  // sem cor escolhida neste navegador: o favicon fica com a cor guardada no servidor
+  for (const [id, tipo] of [["favicon-32", "png32"], ["favicon-256", "png256"]]) {
+    const link = document.getElementById(id);
+    if (link) link.href = `/api/icone/${tipo}?cor=${a}`;
+  }
+  api("POST", "/api/aparencia/icone", { cor: a }).catch(() => { /* ícone é só visual */ });
 }
 
 /* ------------------------------------------------------------------ tempo real */
@@ -2597,7 +2712,11 @@ async function atualizarAlertaConsumo() {
   try {
     const r = await api("GET", "/api/consumo/limites");
     const selos = [seloUso("Claude", r.limites), seloUso("Codex", r.codex), seloUso("Antigravity", r.antigravity)].filter(Boolean);
-    $("#consumo-alert").innerHTML = selos.join('<span class="uso-sep">|</span>');
+    // balão que aparece ao passar o mouse no botão; o ponto colorido no botão avisa cota alta mesmo fechado
+    $("#consumo-alert").innerHTML = selos.length ? `<span class="uso-tit">Uso das cotas</span>${selos.join("")}` : "";
+    const btn = $("#btn-consumo");
+    btn.classList.toggle("uso-alto", selos.some((s) => s.includes("uso-selo alto")));
+    btn.classList.toggle("uso-medio", !btn.classList.contains("uso-alto") && selos.some((s) => s.includes("uso-selo medio")));
   } catch { /* sem dados ainda */ }
 }
 
@@ -2706,7 +2825,8 @@ function bind() {
 }
 
 (async function init() {
-  setAccent(localStorageGet("accent") || "orange");
+  // só reaplica o ícone se este navegador já tem uma cor escolhida (um navegador "zerado" não volta tudo ao laranja)
+  setAccent(localStorageGet("accent") || "orange", !!localStorageGet("accent"));
   setTheme(localStorageGet("theme") || "");
   setFonte(localStorageGet("fonte") || "");
   bind();

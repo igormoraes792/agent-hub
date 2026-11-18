@@ -54,7 +54,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from hub import accounts, busca, consumo, importer, mcp_health, office, providers, store
+from hub import accounts, busca, consumo, icone, importer, mcp_health, office, providers, store
 from hub.janela import abrir_janela
 from hub.sessions import AGENT_CONTROLLED, bus, codex_server, effective_chat, manager
 
@@ -223,7 +223,8 @@ async def get_meta():
 @app.get("/api/accounts")
 async def accounts_list():
     meta = providers.meta()
-    return {"accounts": accounts.get_all_accounts(meta)}
+    # em thread: o status do Claude roda `claude auth status`, que leva um ou dois segundos
+    return {"accounts": await asyncio.to_thread(accounts.get_all_accounts, meta)}
 
 
 @app.post("/api/accounts/key")
@@ -242,6 +243,29 @@ async def accounts_set_key(body: dict):
     else:
         acc = accounts.get_codex_account(meta)
     return {"status": "ok", "account": acc}
+
+
+@app.post("/api/aparencia/icone")
+async def aparencia_icone(body: dict):
+    """Ícone do hub (atalhos, barra de tarefas, área de trabalho, janela) na cor de destaque escolhida."""
+    return await asyncio.to_thread(icone.aplicar, body.get("cor"))
+
+
+@app.get("/api/icone/{tipo}")
+async def icone_atual(tipo: str, cor: str | None = None):
+    if tipo not in ("ico", "png32", "png256"):
+        raise HTTPException(404)
+    arquivo = (await asyncio.to_thread(icone.arquivos, cor or icone.cor_atual()))[tipo]
+    return FileResponse(arquivo, headers={"Cache-Control": "no-cache"})
+
+
+@app.post("/api/accounts/default-model")
+async def accounts_default_model(body: dict):
+    """Modelo padrão dos chats novos de uma IA (não muda chats já abertos nem agentes, que têm modelo próprio)."""
+    try:
+        return {"modelosPadrao": accounts.definir_modelo_padrao(body.get("provider"), body.get("model") or None)}
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
 
 
 @app.post("/api/accounts/login")
@@ -439,7 +463,8 @@ async def create_chat(body: dict):
             value = agent.get(field)
         return value if value not in (None, "") else default
 
-    default_model = "default" if provider == "claude" else ("gemini-3.8-flash-high" if provider == "antigravity" else None)
+    default_model = accounts.modelos_padrao().get(provider) or (
+        "default" if provider == "claude" else ("gemini-3.8-flash-high" if provider == "antigravity" else None))
     default_perm = "default" if provider == "claude" else ("auto" if provider == "antigravity" else "default")
 
     chat = store.chats.create({

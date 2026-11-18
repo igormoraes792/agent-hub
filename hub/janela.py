@@ -13,7 +13,15 @@ PASTA = Path(__file__).resolve().parent.parent
 # Identidade do hub na barra de tarefas: sem ela a janela é do Edge, e fixar fixa o Edge.
 APP_ID = "Herval.AgentHub"
 COMANDO = f'"{PASTA / ".venv" / "Scripts" / "pythonw.exe"}" "{PASTA / "AgentHub.pyw"}"'
-ICONE = f"{PASTA / 'static' / 'icone.ico'},0"
+
+
+def icone() -> str:
+    """Ícone na cor de destaque escolhida no app (laranja é o original)."""
+    try:
+        from .icone import arquivos, cor_atual
+        return f"{arquivos(cor_atual())['ico']},0"
+    except Exception:  # noqa: BLE001 - sem Pillow ou sem permissão: usa o original
+        return f"{PASTA / 'static' / 'icone.ico'},0"
 
 
 def _gravar_identidade(store) -> None:
@@ -35,7 +43,7 @@ def marcar_janela(hwnd: int) -> None:
     store = propsys.SHGetPropertyStoreForWindow(hwnd, propsys.IID_IPropertyStore)
     for chave, valor in ((pscon.PKEY_AppUserModel_RelaunchCommand, COMANDO),
                          (pscon.PKEY_AppUserModel_RelaunchDisplayNameResource, TITULO),
-                         (pscon.PKEY_AppUserModel_RelaunchIconResource, ICONE)):
+                         (pscon.PKEY_AppUserModel_RelaunchIconResource, icone())):
         store.SetValue(chave, propsys.PROPVARIANTType(valor, pythoncom.VT_LPWSTR))
     _gravar_identidade(store)  # o ID por último: o Windows lê os dados de relançamento quando ele muda
 
@@ -73,6 +81,17 @@ def _janelas_do_hub() -> set[int]:
 
     user32.EnumWindows(visitar, 0)
     return achadas
+
+
+def remarcar_janelas() -> None:
+    """Regrava a identidade (com o ícone da cor atual) nas janelas do hub abertas, depois de trocar a cor."""
+    if sys.platform != "win32":
+        return
+    for hwnd in _janelas_do_hub():
+        try:
+            marcar_janela(hwnd)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _maximizar_nova(antes: set[int], prazo: float = 15) -> None:
