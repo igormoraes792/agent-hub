@@ -1242,12 +1242,12 @@ class AntigravitySession(Session):
             cmd.extend(["--conversation", self.conversation_id])
 
         model = chat.get("model") or (agent.get("model") if agent else None)
+        effort = chat.get("effort") or (agent.get("effort") if agent else None)
+        # nunca --effort: o nível vai no nome do modelo (o agy recusa --effort que não bate com o nome)
+        from .providers import modelo_antigravity
+        model = modelo_antigravity(model, effort)
         if model and model != "default":
             cmd.extend(["--model", model])
-
-        effort = chat.get("effort") or (agent.get("effort") if agent else None)
-        if effort:
-            cmd.extend(["--effort", effort])
 
         perm = chat.get("permission_mode") or (agent.get("permission_mode") if agent else None)
         if perm == "dangerously-skip-permissions":
@@ -1265,6 +1265,9 @@ class AntigravitySession(Session):
         last_usage = None
 
         try:
+            if not os.path.isdir(cwd):  # sem isto o Windows só diz "WinError 267 O nome do diretório é inválido"
+                raise RuntimeError(f"a pasta de trabalho não existe: {cwd}. Escolha a pasta de novo no agente "
+                                   "(Editar agente) ou crie um chat novo.")
             self.proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,

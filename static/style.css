@@ -888,6 +888,10 @@ label > .input, label > select, label > textarea, label > .row { margin-top: 4px
   box-shadow: 0 4px 12px rgba(0,0,0,0.12);
 }
 .bubble-doc:hover { border-color: var(--accent); box-shadow: 0 0 12px var(--accent-subtle); }
+/* nome do anexo inteiro dentro do cartão: quebra a linha (inclusive nomes sem espaço, como "Extrato[18_11_26].pdf") */
+.bubble-doc { max-width: min(440px, 100%); box-sizing: border-box; white-space: normal; }
+.bubble-doc .doc-ico { flex-shrink: 0; }
+.bubble-doc .doc-nome { min-width: 0; overflow-wrap: break-word; line-height: 1.35; }
 .soltar-aqui { outline: 2px dashed var(--accent); outline-offset: -8px; border-radius: 16px; }
 
 /* Cartões de Documentos / Office */

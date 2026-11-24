@@ -399,7 +399,9 @@ root.withdraw()
 root.attributes("-topmost", True)
 root.lift(); root.focus_force()
 path = filedialog.askdirectory(parent=root, initialdir=sys.argv[1] or None, title=sys.argv[2], mustexist=True)
-sys.stdout.write(path or "")
+# UTF-8 explícito: no Windows o stdout redirecionado usa a página de código antiga (cp1252) e "Ações" chegava
+# ao servidor como "A��es", uma pasta que não existe (WinError 267 ao abrir o chat)
+sys.stdout.buffer.write((path or "").encode("utf-8"))
 """
 _pick_lock = asyncio.Lock()
 
@@ -424,6 +426,8 @@ async def pick_folder(body: dict):
     if proc.returncode != 0:
         raise HTTPException(500, f"Não consegui abrir a janela de pastas: {err.decode('utf-8', 'replace')[-300:]}")
     path = out.decode("utf-8", "replace").strip()
+    if path and not os.path.isdir(path):
+        raise HTTPException(500, f"A pasta escolhida não foi reconhecida ({path}). Tente de novo ou digite o caminho.")
     return {"path": os.path.normpath(path) if path else None}
 
 
@@ -466,6 +470,10 @@ async def create_chat(body: dict):
     default_model = accounts.modelos_padrao().get(provider) or (
         "default" if provider == "claude" else ("gemini-3.8-flash-high" if provider == "antigravity" else None))
     default_perm = "default" if provider == "claude" else ("auto" if provider == "antigravity" else "default")
+    cwd = pick("cwd", str(Path.home()))
+    if not os.path.isdir(cwd):
+        onde = "Edite o agente e escolha a pasta de novo." if agent and not body.get("cwd") else "Escolha outra pasta."
+        raise HTTPException(400, f"A pasta de trabalho não existe: {cwd}. {onde}")
 
     chat = store.chats.create({
         "title": body.get("title") or (f"{agent['name']}" if agent else "Novo chat"),
@@ -473,7 +481,7 @@ async def create_chat(body: dict):
         "agent_id": agent["id"] if agent else None,
         "model": pick("model", default_model),
         "effort": pick("effort"),
-        "cwd": pick("cwd", str(Path.home())),
+        "cwd": cwd,
         "permission_mode": pick("permission_mode", default_perm),
         "sandbox": pick("sandbox", "workspace-write"),
         "approval_policy": pick("approval_policy", "on-request"),
@@ -792,6 +800,8 @@ def _clean_agent(body: dict) -> dict:
             data[key] = [t.strip() for t in data[key].split(",") if t.strip()]
     if data.get("provider") not in (None, "claude", "codex", "antigravity"):
         raise HTTPException(400, "provider inválido")
+    if data.get("cwd") and not os.path.isdir(data["cwd"]):
+        raise HTTPException(400, f"A pasta de trabalho não existe: {data['cwd']}")
     return data
 
 

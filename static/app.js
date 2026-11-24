@@ -103,8 +103,11 @@ function selectHtml(id, options, value, attrs = "") {
 /* Campos de modelo/esforço/permissões. `prefix` diferencia os formulários que usam o mesmo bloco. */
 function providerFieldsHtml(prefix, provider, v = {}) {
   const defModel = provider === "claude" ? "default" : (provider === "antigravity" ? "gemini-3.8-flash-high" : "");
-  let html = `<label>Modelo ${selectHtml(`${prefix}-model`, modelOptions(provider), v.model ?? defModel)}</label>
-    <label>Esforço de raciocínio ${selectHtml(`${prefix}-effort`, effortOptions(provider), v.effort)}</label>`;
+  // No Antigravity o nível de raciocínio faz parte do modelo, ex.: "Gemini 4 Neon (XHigh)"; não há campo separado
+  let html = `<label>Modelo ${selectHtml(`${prefix}-model`, modelOptions(provider), v.model ?? defModel)}</label>` +
+    (provider === "antigravity"
+      ? `<div class="hint" style="align-self:end">O nível de raciocínio vem no próprio modelo: Low, Medium, High ou XHigh.</div>`
+      : `<label>Esforço de raciocínio ${selectHtml(`${prefix}-effort`, effortOptions(provider), v.effort)}</label>`);
   if (provider === "claude") {
     html += `<label>Permissões ${selectHtml(`${prefix}-permission_mode`, S.meta?.claude?.permissionModes || [], v.permission_mode || "default")}</label>`;
   } else if (provider === "antigravity") {
@@ -400,7 +403,8 @@ function renderChatHeader() {
   atualizarBotaoEnviar("chat");
   const agent = S.agents.find((a) => a.id === c.agent_id);
   const modelLabel = modelOptions(c.provider).find((m) => m.value === (c.model ?? ""))?.label || c.model || "padrão";
-  $("#composer-info").textContent = `${modelLabel}${c.effort ? " · " + (EFFORT_LABEL[c.effort] || c.effort) : ""}${agent ? " · 🤖 " + agent.name : ""}`;
+  const esf = c.provider !== "antigravity" && c.effort;  // no Antigravity o nível já está no nome do modelo
+  $("#composer-info").textContent = `${modelLabel}${esf ? " · " + (EFFORT_LABEL[esf] || esf) : ""}${agent ? " · 🤖 " + agent.name : ""}`;
   if (!$("#chat-settings").classList.contains("hidden")) renderChatSettings();
 }
 
@@ -437,7 +441,7 @@ function renderChatSettings() {
 function chatSettingsSummary(c) {
   const find = (list, v) => (list || []).find((o) => String(o.value) === String(v ?? ""))?.label;
   const parts = [find(modelOptions(c.provider), c.model) || c.model || "modelo padrão"];
-  if (c.effort) parts.push(`esforço ${EFFORT_LABEL[c.effort] || c.effort}`);
+  if (c.effort && c.provider !== "antigravity") parts.push(`esforço ${EFFORT_LABEL[c.effort] || c.effort}`);
   if (c.provider === "claude") parts.push(find(S.meta?.claude?.permissionModes, c.permission_mode) || c.permission_mode);
   else if (c.provider === "antigravity") parts.push(find(S.meta?.antigravity?.permissionModes, c.permission_mode) || c.permission_mode);
   else parts.push(find(S.meta?.codex?.sandboxModes, c.sandbox) || c.sandbox, find(CODEX_APPROVAL, c.approval_policy) || c.approval_policy);
@@ -717,7 +721,7 @@ function renderEvent(ev, wrap) {
       }).join("");
       const docs = (ev.files || []).map((d) =>
         `<a class="bubble-doc" href="${anexoUrl(d.file)}" target="_blank" rel="noopener" title="Baixar ${esc(d.name)}">
-           <span class="doc-ico">${EXT_DOCUMENTOS[extensao(d.name)] || "📄"}</span><span>${esc(d.name)}</span></a>`).join("");
+           <span class="doc-ico">${EXT_DOCUMENTOS[extensao(d.name)] || "📄"}</span><span class="doc-nome">${nomeQuebravel(d.name)}</span></a>`).join("");
       wrap.append(h("div", { class: "msg user" },
         `<div class="bubble">${imgs ? `<div class="bubble-imgs">${imgs}</div>` : ""}${docs ? `<div class="bubble-docs">${docs}</div>` : ""}${ev.text ? `<div>${esc(ev.text)}</div>` : ""}</div>`));
       break;
@@ -973,6 +977,8 @@ async function prepararImagem(file) {
 const EXT_DOCUMENTOS = { xlsx: "📊", xlsm: "📊", xls: "📊", csv: "📊", pdf: "📕", docx: "📝", pptx: "📽️", txt: "📄", json: "📄", md: "📄" };
 const extensao = (nome) => (String(nome || "").match(/\.([a-z0-9]+)$/i) || [])[1]?.toLowerCase() || "";
 const ehDocumento = (f) => !!EXT_DOCUMENTOS[extensao(f?.name)];
+/* Nome de arquivo com pontos de quebra naturais (depois de _ - ] ) e antes da extensão), para não cortar ".pd|f". */
+const nomeQuebravel = (nome) => esc(nome).replace(/([_\-\])])/g, "$1<wbr>").replace(/\.(?=[^.]+$)/, "<wbr>.");
 const ehImagem = (f) => !!f?.type && TIPOS_IMAGEM.test(f.type);
 
 async function prepararDocumento(file) {
@@ -1193,7 +1199,7 @@ function saudacao() {
 
 /* Chat livre novo no Claude começa no Opus com raciocínio alto (dá para trocar em "Modelo, permissões e pasta"). */
 const PADRAO_CHAT_CLAUDE = { model: "opus", effort: "high" };
-const PADRAO_CHAT_ANTIGRAVITY = { model: "gemini-3.8-flash-high", effort: "high" };
+const PADRAO_CHAT_ANTIGRAVITY = { model: "gemini-3.8-flash-high" };
 
 /* Modelo e esforço com que um chat novo abre: o modelo escolhido em Configurações → Contas, senão o padrão do hub. */
 function padraoChat(provider) {
@@ -1225,7 +1231,7 @@ function atualizarInfoStart() {
   const provider = S.start.provider;
   const valor = agent ? (agent.model ?? "") : ($("#ds-model")?.value ?? "");
   const nome = modelOptions(provider).find((m) => String(m.value) === String(valor))?.label || valor || "padrão";
-  const esforco = agent ? agent.effort : $("#ds-effort")?.value;
+  const esforco = provider === "antigravity" ? null : (agent ? agent.effort : $("#ds-effort")?.value);
   const provNome = provider === "claude" ? "Claude" : (provider === "antigravity" ? "Antigravity" : "Codex");
   $("#start-info").textContent = `${provNome} · ${nome}${esforco ? ` · ${EFFORT_LABEL[esforco] || esforco}` : ""}`;
 }

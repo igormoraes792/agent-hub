@@ -34,14 +34,15 @@ CODEX_SANDBOX_MODES = [
     {"value": "danger-full-access", "label": "Acesso total (perigoso)"},
 ]
 
+# No Antigravity o nível de raciocínio faz parte do nome do modelo (gemini-4-neon-high, ...-xhigh). A lista real vem
+# de `agy models` (ver antigravity_models); esta é só a reserva enquanto a consulta não termina ou se ela falhar.
 ANTIGRAVITY_MODELS = [
-    {"value": "gemini-3.8-flash-high", "displayName": "Gemini 3.8 Flash (High)", "description": "Rápido e avançado com alto raciocínio"},
-    {"value": "gemini-3.8-flash-medium", "displayName": "Gemini 3.8 Flash (Medium)", "description": "Equilíbrio de velocidade e raciocínio"},
-    {"value": "gemini-3.8-flash-low", "displayName": "Gemini 3.8 Flash (Low)", "description": "Máxima velocidade para respostas curtas"},
-    {"value": "claude-sonnet-4-6", "displayName": "Claude Sonnet 4.6 (Thinking)", "description": "Modelo avançado Claude com raciocínio"},
-    {"value": "claude-opus-4-6-thinking", "displayName": "Claude Opus 4.6 (Thinking)", "description": "Modelo mais capaz para tarefas complexas"},
-    {"value": "gpt-oss-120b-medium", "displayName": "GPT-OSS 120B (Medium)", "description": "Modelo aberto de alta performance"},
+    {"value": "gemini-3.8-flash-high", "displayName": "Gemini 3.8 Flash (High)"},
+    {"value": "gemini-3.8-flash-medium", "displayName": "Gemini 3.8 Flash (Medium)"},
+    {"value": "gemini-3.8-flash-low", "displayName": "Gemini 3.8 Flash (Low)"},
+    {"value": "gpt-oss-120b-medium", "displayName": "GPT-OSS 120B (Medium)"},
 ]
+ANTIGRAVITY_MODELS_CACHE = DATA_DIR / "antigravity_models.json"
 
 ANTIGRAVITY_PERMISSION_MODES = [
     {"value": "auto", "label": "Auto (classificador decide)"},
@@ -120,6 +121,72 @@ def find_antigravity() -> str | None:
         if c.exists():
             return str(c)
     return None
+
+
+_agy_consultando = False
+
+
+def _consultar_modelos_antigravity() -> None:
+    """Roda `agy models` (saída: "slug<TAB>Nome" por linha) e guarda em data/antigravity_models.json."""
+    import subprocess
+    import threading
+    import time
+
+    global _agy_consultando
+    agy = find_antigravity()
+    if not agy or _agy_consultando:
+        return
+    _agy_consultando = True
+
+    def consultar():
+        global _agy_consultando
+        try:
+            r = subprocess.run([agy, "models"], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                               timeout=60, cwd=str(HOME), creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            modelos = []
+            for linha in r.stdout.splitlines():
+                partes = linha.strip().split("\t")
+                if len(partes) == 2 and partes[0] and " " not in partes[0]:
+                    modelos.append({"value": partes[0], "displayName": partes[1]})
+            if modelos:
+                ANTIGRAVITY_MODELS_CACHE.parent.mkdir(parents=True, exist_ok=True)
+                ANTIGRAVITY_MODELS_CACHE.write_text(json.dumps({"ts": time.time(), "models": modelos}, ensure_ascii=False,
+                                                               indent=2), encoding="utf-8")
+        except Exception:  # noqa: BLE001 - sem rede ou sem login: segue com a lista guardada
+            pass
+        finally:
+            _agy_consultando = False
+
+    threading.Thread(target=consultar, daemon=True).start()
+
+
+def antigravity_models() -> list[dict]:
+    """Modelos do Antigravity: os da última consulta a `agy models` (refeita em segundo plano a cada 12 h)."""
+    import time
+
+    try:
+        cache = json.loads(ANTIGRAVITY_MODELS_CACHE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError):
+        cache = {}
+    if time.time() - cache.get("ts", 0) > 12 * 3600:
+        _consultar_modelos_antigravity()
+    return cache.get("models") or ANTIGRAVITY_MODELS
+
+
+NIVEIS_NO_NOME = ("low", "medium", "high", "xhigh", "max")
+
+
+def modelo_antigravity(modelo: str | None, esforco: str | None) -> str | None:
+    """O Antigravity não aceita --effort diferente do nível que já está no nome do modelo (e alguns modelos não aceitam
+    --effort nenhum). Então o hub nunca manda --effort: se houver um esforço escolhido e existir a variante do modelo
+    com esse nível (ex.: gemini-4-neon-high + xhigh -> gemini-4-neon-xhigh), usa a variante; senão mantém o modelo."""
+    if not modelo or not esforco:
+        return modelo
+    base, _, nivel = modelo.rpartition("-")
+    if nivel not in NIVEIS_NO_NOME or not base:
+        return modelo
+    alvo = f"{base}-{esforco}"
+    return alvo if any(m["value"] == alvo for m in antigravity_models()) else modelo
 
 
 def find_codex() -> str | None:
@@ -238,7 +305,7 @@ def meta() -> dict:
         "antigravity": {
             "available": agy_path is not None,
             "path": agy_path,
-            "models": ANTIGRAVITY_MODELS,
+            "models": antigravity_models(),
             "defaultModel": "gemini-3.8-flash-high",
             "permissionModes": ANTIGRAVITY_PERMISSION_MODES,
             "effortLevels": ANTIGRAVITY_EFFORT_LEVELS,
