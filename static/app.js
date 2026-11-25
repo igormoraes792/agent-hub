@@ -723,7 +723,7 @@ function renderEvent(ev, wrap) {
         `<a class="bubble-doc" href="${anexoUrl(d.file)}" target="_blank" rel="noopener" title="Baixar ${esc(d.name)}">
            <span class="doc-ico">${EXT_DOCUMENTOS[extensao(d.name)] || "📄"}</span><span class="doc-nome">${nomeQuebravel(d.name)}</span></a>`).join("");
       wrap.append(h("div", { class: "msg user" },
-        `<div class="bubble">${imgs ? `<div class="bubble-imgs">${imgs}</div>` : ""}${docs ? `<div class="bubble-docs">${docs}</div>` : ""}${ev.text ? `<div>${esc(ev.text)}</div>` : ""}</div>`));
+        `<div class="bubble">${imgs ? `<div class="bubble-imgs">${imgs}</div>` : ""}${docs ? `<div class="bubble-docs">${docs}</div>` : ""}${ev.text ? `<div>${esc(ev.text)}</div>` : ""}</div>${horaMensagem(ev.ts)}`));
       break;
     }
     case "assistant": {
@@ -977,6 +977,16 @@ async function prepararImagem(file) {
 const EXT_DOCUMENTOS = { xlsx: "📊", xlsm: "📊", xls: "📊", csv: "📊", pdf: "📕", docx: "📝", pptx: "📽️", txt: "📄", json: "📄", md: "📄" };
 const extensao = (nome) => (String(nome || "").match(/\.([a-z0-9]+)$/i) || [])[1]?.toLowerCase() || "";
 const ehDocumento = (f) => !!EXT_DOCUMENTOS[extensao(f?.name)];
+/* Data e hora discretas abaixo de cada mensagem do usuário (mouse em cima: data completa com segundos).
+   Conversas importadas antigas podem não ter horário: aí não mostra nada. */
+function horaMensagem(ts) {
+  if (!ts) return "";
+  const d = new Date(ts * 1000);
+  const data = d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" });
+  const hora = d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+  const completo = d.toLocaleString("pt-BR", { dateStyle: "full", timeStyle: "medium" });
+  return `<time class="msg-hora" datetime="${d.toISOString()}" title="${esc(completo)}">${data} · ${hora}</time>`;
+}
 /* Nome de arquivo com pontos de quebra naturais (depois de _ - ] ) e antes da extensão), para não cortar ".pd|f". */
 const nomeQuebravel = (nome) => esc(nome).replace(/([_\-\])])/g, "$1<wbr>").replace(/\.(?=[^.]+$)/, "<wbr>.");
 const ehImagem = (f) => !!f?.type && TIPOS_IMAGEM.test(f.type);
