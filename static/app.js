@@ -150,14 +150,18 @@ function renderChatList() {
   const list = $("#chat-list");
   list.innerHTML = "";
   const agentsById = Object.fromEntries(S.agents.map((a) => [a.id, a]));
-  const groups = { "Hoje": [], "Últimos 7 dias": [], "Anteriores": [] };
+  // Por dia do calendário (meia-noite local), não por "últimas 24 h": às 9h, um chat de ontem às 15h é de "Ontem"
+  const groups = { "Hoje": [], "Ontem": [], "Últimos 7 dias": [], "Anteriores": [] };
   const arquivados = [];
-  const now = Date.now() / 1000;
+  const meiaNoite = new Date(); meiaNoite.setHours(0, 0, 0, 0);
+  const hoje = meiaNoite.getTime() / 1000;
+  const ontem = new Date(meiaNoite.getFullYear(), meiaNoite.getMonth(), meiaNoite.getDate() - 1).getTime() / 1000;
+  const seteDias = new Date(meiaNoite.getFullYear(), meiaNoite.getMonth(), meiaNoite.getDate() - 6).getTime() / 1000;
   for (const c of S.chats) {
     if (termos.length && !termos.every((t) => norm(c.title).includes(t)) && !noTexto[c.id]) continue;
     if (c.archived) { arquivados.push(c); continue; }
-    const age = now - (c.updated_at || 0);
-    (age < 86400 ? groups["Hoje"] : age < 7 * 86400 ? groups["Últimos 7 dias"] : groups["Anteriores"]).push(c);
+    const t = c.updated_at || 0;
+    (t >= hoje ? groups["Hoje"] : t >= ontem ? groups["Ontem"] : t >= seteDias ? groups["Últimos 7 dias"] : groups["Anteriores"]).push(c);
   }
   for (const [label, items] of Object.entries(groups)) {
     if (!items.length) continue;
@@ -2841,6 +2845,12 @@ function bind() {
 }
 
 (async function init() {
+  // janela aberta de um dia para o outro: à meia-noite a lista reagrupa (Hoje → Ontem)
+  let diaDaLista = new Date().toDateString();
+  setInterval(() => {
+    const dia = new Date().toDateString();
+    if (dia !== diaDaLista) { diaDaLista = dia; renderChatList(); }
+  }, 60000);
   // só reaplica o ícone se este navegador já tem uma cor escolhida (um navegador "zerado" não volta tudo ao laranja)
   setAccent(localStorageGet("accent") || "orange", !!localStorageGet("accent"));
   setTheme(localStorageGet("theme") || "");
