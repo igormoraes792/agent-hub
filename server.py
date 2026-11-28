@@ -259,11 +259,14 @@ async def icone_atual(tipo: str, cor: str | None = None):
     return FileResponse(arquivo, headers={"Cache-Control": "no-cache"})
 
 
-@app.post("/api/accounts/default-model")
-async def accounts_default_model(body: dict):
-    """Modelo padrão dos chats novos de uma IA (não muda chats já abertos nem agentes, que têm modelo próprio)."""
+@app.post("/api/padroes")
+async def salvar_padroes(body: dict):
+    """Padrões dos chats novos: {"provider": ..., "valores": {model, effort, ...}} ou {"cwd": pasta}.
+    Não muda chats já abertos nem agentes, que têm configuração própria."""
     try:
-        return {"modelosPadrao": accounts.definir_modelo_padrao(body.get("provider"), body.get("model") or None)}
+        if "cwd" in body:
+            return accounts.definir_padroes(None, {"cwd": body.get("cwd")})
+        return accounts.definir_padroes(body.get("provider"), body.get("valores") or {})
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
 
@@ -467,10 +470,13 @@ async def create_chat(body: dict):
             value = agent.get(field)
         return value if value not in (None, "") else default
 
-    default_model = accounts.modelos_padrao().get(provider) or (
+    padroes = accounts.padroes_chat()
+    meus = padroes.get(provider, {})  # padrões dos chats novos desta IA (Configurações → Contas)
+    default_model = meus.get("model") or (
         "default" if provider == "claude" else ("gemini-3.8-flash-high" if provider == "antigravity" else None))
-    default_perm = "default" if provider == "claude" else ("auto" if provider == "antigravity" else "default")
-    cwd = pick("cwd", str(Path.home()))
+    default_perm = meus.get("permission_mode") or (
+        "default" if provider == "claude" else ("auto" if provider == "antigravity" else "default"))
+    cwd = pick("cwd", padroes.get("cwd") or str(Path.home()))
     if not os.path.isdir(cwd):
         onde = "Edite o agente e escolha a pasta de novo." if agent and not body.get("cwd") else "Escolha outra pasta."
         raise HTTPException(400, f"A pasta de trabalho não existe: {cwd}. {onde}")
@@ -480,11 +486,11 @@ async def create_chat(body: dict):
         "provider": provider,
         "agent_id": agent["id"] if agent else None,
         "model": pick("model", default_model),
-        "effort": pick("effort"),
+        "effort": pick("effort", meus.get("effort")),
         "cwd": cwd,
         "permission_mode": pick("permission_mode", default_perm),
-        "sandbox": pick("sandbox", "workspace-write"),
-        "approval_policy": pick("approval_policy", "on-request"),
+        "sandbox": pick("sandbox", meus.get("sandbox") or "workspace-write"),
+        "approval_policy": pick("approval_policy", meus.get("approval_policy") or "on-request"),
         "session_id": None,
         "thread_id": None,
         "conversation_id": None,

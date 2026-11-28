@@ -277,13 +277,12 @@ claude_meta = ClaudeMeta()
 
 
 def meta() -> dict:
-    from .accounts import modelos_padrao  # aqui dentro: accounts também importa providers
+    from .accounts import padroes_chat  # aqui dentro: accounts também importa providers
 
     codex_path = find_codex()
     agy_path = find_antigravity()
-    padrao = modelos_padrao()
     return {
-        "modelosPadrao": padrao,  # escolha do usuário para os chats novos (vazio = padrão de cada IA)
+        "padroesChat": padroes_chat(),  # como os chats novos abrem (Configurações → Contas)
         "claude": {
             "available": True,
             "version": claude_meta.data.get("version"),

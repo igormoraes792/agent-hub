@@ -52,24 +52,48 @@ def _write_profiles(data: dict) -> None:
     PROFILES_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+PROVEDORES = ("claude", "codex", "antigravity")
+CAMPOS_PADRAO = ("model", "effort", "permission_mode", "sandbox", "approval_policy")
+
+
+def padroes_chat() -> dict:
+    """Como os chats novos abrem, escolhido em Configurações → Contas: por IA (modelo, esforço, permissões; no Codex
+    sandbox e aprovação) e uma pasta de trabalho para todas. Campo ausente = padrão do hub. Cada chat pode mudar o seu."""
+    settings = _read_settings()
+    salvos = settings.get("padroes_chat") if isinstance(settings.get("padroes_chat"), dict) else {}
+    antigos = settings.get("modelos_padrao") if isinstance(settings.get("modelos_padrao"), dict) else {}  # versão anterior
+    saida: dict = {"cwd": salvos.get("cwd") or ""}
+    for prov in PROVEDORES:
+        valores = dict(salvos.get(prov) or {})
+        if not valores.get("model") and antigos.get(prov):
+            valores["model"] = antigos[prov]
+        saida[prov] = {k: str(v)[:100] for k, v in valores.items() if k in CAMPOS_PADRAO and v}
+    return saida
+
+
 def modelos_padrao() -> dict:
-    """Modelo com que os chats novos abrem em cada IA, escolhido em Configurações → Contas ("" = padrão da própria IA)."""
-    padrao = _read_settings().get("modelos_padrao")
-    return padrao if isinstance(padrao, dict) else {}
+    return {p: v["model"] for p, v in padroes_chat().items() if p in PROVEDORES and v.get("model")}
 
 
-def definir_modelo_padrao(provider: str, modelo: str | None) -> dict:
-    if provider not in ("claude", "codex", "antigravity"):
+def definir_padroes(provider: str | None, valores: dict) -> dict:
+    """provider + valores dos campos da IA, ou provider None + {"cwd": pasta} para a pasta de todas."""
+    import os
+
+    atuais = padroes_chat()
+    if provider is None:
+        cwd = (valores.get("cwd") or "").strip()
+        if cwd and not os.path.isdir(cwd):
+            raise ValueError(f"A pasta não existe: {cwd}")
+        atuais["cwd"] = os.path.normpath(cwd) if cwd else ""
+    elif provider in PROVEDORES:
+        atuais[provider] = {k: str(v)[:100] for k, v in valores.items() if k in CAMPOS_PADRAO and v not in (None, "")}
+    else:
         raise ValueError(f"Provedor {provider} desconhecido.")
     settings = _read_settings()
-    padrao = settings.get("modelos_padrao") if isinstance(settings.get("modelos_padrao"), dict) else {}
-    if modelo:
-        padrao[provider] = str(modelo)[:100]
-    else:
-        padrao.pop(provider, None)  # volta ao padrão da própria IA
-    settings["modelos_padrao"] = padrao
+    settings["padroes_chat"] = atuais
+    settings.pop("modelos_padrao", None)  # já migrado para padroes_chat
     _write_settings(settings)
-    return padrao
+    return atuais
 
 
 def find_bundled_claude() -> str | None:

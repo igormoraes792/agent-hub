@@ -1153,7 +1153,7 @@ function renderStart() {
   $("#start-title").textContent = agent ? agent.name : "";
   $("#start-edit-agent").classList.toggle("hidden", !agent);
   $("#view-start").classList.toggle("hero", !agent);  // chat livre: saudação e caixa de mensagem no centro
-  const cwd = agent?.cwd || localStorageGet("lastCwd") || S.meta?.home || "";
+  const cwd = agent?.cwd || pastaPadrao();
   const body = $("#start-body");
   const opts = $("#start-opts");
   if (agent) {
@@ -1173,7 +1173,7 @@ function renderStart() {
             <b>Nenhuma IA conectada no momento</b>
             <div>Conecte o Google Antigravity, Claude ou Codex para começar a conversar e criar agentes.</div>
           </div>
-          <button type="button" class="btn primary btn-sm" id="btn-start-add-ai">➕ Adicionar IA</button>
+          <button type="button" class="btn primary btn-sm" id="btn-start-add-ai">🔑 Conectar uma IA</button>
         </div>`
       : "";
     body.innerHTML = `${emptyBanner}<div class="hero-box"><span class="logo hero-logo">A</span><h1 class="hero-title">${saudacao()}</h1></div>`;
@@ -1194,7 +1194,7 @@ function renderStart() {
       </div>`;
     bindFolderButtons(opts, "Pasta de trabalho desta conversa");
     $$("select", opts).forEach((s) => s.addEventListener("change", atualizarInfoStart));
-    if ($("#btn-start-add-ai")) $("#btn-start-add-ai").onclick = () => openAddAiModal();
+    if ($("#btn-start-add-ai")) $("#btn-start-add-ai").onclick = () => (location.hash = "#/settings/contas");
   }
   $$("#start-provider button").forEach((b) => (b.onclick = () => {
     S.start.provider = b.dataset.p;
@@ -1215,26 +1215,19 @@ function saudacao() {
 const PADRAO_CHAT_CLAUDE = { model: "opus", effort: "high" };
 const PADRAO_CHAT_ANTIGRAVITY = { model: "gemini-3.8-flash-high" };
 
-/* Modelo e esforço com que um chat novo abre: o modelo escolhido em Configurações → Contas, senão o padrão do hub. */
+/* Como um chat novo abre: os padrões de Configurações → Contas (modelo, esforço, permissões…) sobre os do hub. */
 function padraoChat(provider) {
   const base = provider === "claude" ? PADRAO_CHAT_CLAUDE : (provider === "antigravity" ? PADRAO_CHAT_ANTIGRAVITY : {});
-  const escolhido = S.meta?.modelosPadrao?.[provider];
-  return escolhido ? { ...base, model: escolhido } : base;
+  return { ...base, ...(S.meta?.padroesChat?.[provider] || {}) };
 }
+/* Pasta de trabalho de um chat novo: a padrão das Configurações, senão a última usada, senão a pasta do usuário. */
+const pastaPadrao = () => S.meta?.padroesChat?.cwd || localStorageGet("lastCwd") || S.meta?.home || "";
 
-/* Seletor "Modelo padrão dos chats novos" no cartão de cada conta. */
-function caixaModeloPadrao(provider) {
-  const fixo = provider === "claude" ? PADRAO_CHAT_CLAUDE.model : (provider === "antigravity" ? PADRAO_CHAT_ANTIGRAVITY.model : null);
-  let opcoes = modelOptions(provider);  // no Codex já vem "Padrão do Codex (modelo do config.toml)"
-  if (fixo) {
-    const rotulo = opcoes.find((o) => o.value === fixo)?.label || fixo;
-    opcoes = [{ value: "", label: `Padrão do hub (${rotulo})` }, ...opcoes];
-  }
-  const atual = S.meta?.modelosPadrao?.[provider] || "";
-  return `<div class="account-model-box">
-      <label class="account-model-label">Modelo padrão dos chats novos
-        ${selectHtml(`padrao-${provider}`, opcoes, atual, `class="sel-modelo-padrao" data-p="${provider}"`)}</label>
-      <div class="hint">Vale para os próximos chats do ${esc(NOME_IA[provider] || provider)}. Chats já abertos e agentes mantêm o modelo deles.</div>
+/* "Padrões dos chats novos" na linha de cada IA, em Configurações → Contas: os mesmos campos da tela de início. */
+function caixaPadroes(provider) {
+  return `<div class="conta-padroes" data-p="${provider}">
+      <div class="k">Padrões dos chats novos</div>
+      <div class="grid2">${providerFieldsHtml(`pad-${provider}`, provider, padraoChat(provider))}</div>
     </div>`;
 }
 
@@ -1265,38 +1258,76 @@ async function garantirLogin(provider) {
   return pedirLogin(provider, acc);
 }
 
-function pedirLogin(provider, acc) {
+/* Janela "Conectar" de uma IA: entrar pela conta (navegador; no Antigravity, o app dele) ou usar uma chave de API.
+   Usada pela tela de Contas e pelo primeiro chat sem login. trocar=true: só conclui quando a conta mudar.
+   Devolve true quando a IA ficou conectada. */
+const DICA_CHAVE = { claude: "sk-ant-…", codex: "sk-proj-…", antigravity: "AIza…" };
+const identidadeConta = (a) => (a ? a.email || a.masked_key || a.account_id || a.user_id || "" : "");
+
+function pedirLogin(provider, acc, { trocar = false } = {}) {
   return new Promise((resolve) => {
     const nome = NOME_IA[provider] || provider;
-    const semPrograma = acc.status === "unavailable" || (provider === "codex" && acc.available === false);
+    const semPrograma = acc.status === "unavailable" || (provider !== "claude" && acc.available === false);
+    const antes = identidadeConta(acc);
+    const rotuloEntrar = provider === "antigravity" ? "Entrar pelo Antigravity" : "Entrar com o navegador";
     const fundo = h("div", { class: "modal-backdrop" });
     fundo.innerHTML = `<div class="modal-box login-box" role="dialog" aria-modal="true" aria-labelledby="login-tit">
-      <div class="modal-head"><h3 id="login-tit">🔑 Entrar no ${esc(nome)}</h3>
+      <div class="modal-head"><h3 id="login-tit">🔑 ${trocar ? "Trocar a conta do" : "Conectar o"} ${esc(nome)}</h3>
         <button type="button" class="btn ghost icon" data-a="fechar" title="Fechar">✕</button></div>
       <div class="modal-sub">${semPrograma
         ? `O ${esc(nome)} não está instalado neste computador. Instale-o (ou a extensão dele no VS Code) e tente de novo, ou use uma chave de API.`
-        : `Para conversar com o ${esc(nome)}, entre na sua conta. O login abre no navegador e fica salvo só neste computador; ele não vai para o projeto nem para o GitHub.`}</div>
+        : `Entre com a sua conta ou use uma chave de API. O acesso fica salvo só neste computador; não vai para o projeto nem para o GitHub.`}</div>
+      <div class="login-chave hidden">
+        <label>Chave de API <input type="password" class="input" data-c="chave" placeholder="${DICA_CHAVE[provider] || ""}" autocomplete="off"></label>
+        <label>Nome para lembrar (opcional) <input type="text" class="input" data-c="rotulo" autocomplete="off"></label>
+      </div>
       <div class="login-status muted small" aria-live="polite"></div>
       <div class="login-acoes">
         <button type="button" class="btn ghost" data-a="chave">Usar chave de API</button>
         <button type="button" class="btn ghost" data-a="fechar">Cancelar</button>
-        ${semPrograma ? "" : `<button type="button" class="btn primary" data-a="entrar">Entrar com o navegador</button>`}
+        ${semPrograma ? "" : `<button type="button" class="btn primary" data-a="entrar">${rotuloEntrar}</button>`}
       </div></div>`;
+    const st = fundo.querySelector(".login-status");
     let timer = null;
     const fim = (ok) => { clearInterval(timer); document.removeEventListener("keydown", esc_); fundo.remove(); resolve(ok); };
     const esc_ = (e) => { if (e.key === "Escape") fim(false); };
     document.addEventListener("keydown", esc_);
+    const conectou = (r) => {
+      const a = (r.accounts || []).find((x) => x.id === provider);
+      return a?.status === "connected" && (!trocar || identidadeConta(a) !== antes);
+    };
     fundo.addEventListener("click", async (e) => {
       const botao = e.target.closest("[data-a]");
       const a = botao?.dataset.a;
       if (e.target === fundo || a === "fechar") return fim(false);
-      if (a === "chave") { fim(false); location.hash = "#/settings/contas"; return; }
+      if (a === "chave") {  // mostra o campo da chave; o botão vira "Salvar chave"
+        fundo.querySelector(".login-chave").classList.remove("hidden");
+        botao.dataset.a = "salvar-chave";
+        botao.textContent = "Salvar chave";
+        botao.classList.replace("ghost", "primary");
+        fundo.querySelector("[data-a=entrar]")?.classList.replace("primary", "ghost");
+        fundo.querySelector("[data-c=chave]").focus();
+        return;
+      }
+      if (a === "salvar-chave") {
+        const chave = fundo.querySelector("[data-c=chave]").value.trim();
+        if (!chave) { st.textContent = "Cole a chave de API."; return; }
+        botao.disabled = true;
+        try {
+          await api("POST", "/api/accounts/key", { provider, key: chave, label: fundo.querySelector("[data-c=rotulo]").value.trim() || null });
+          const r = await api("GET", "/api/accounts");
+          S.accounts = r.accounts || [];
+          toast(`✅ ${nome} conectado com a chave de API.`);
+          return fim(true);
+        } catch (err) { st.textContent = err.message; botao.disabled = false; return; }
+      }
       if (a !== "entrar") return;
-      const st = fundo.querySelector(".login-status");
       botao.disabled = true;
       try { await api("POST", "/api/accounts/login", { provider }); }
       catch (err) { st.textContent = err.message; botao.disabled = false; return; }
-      st.textContent = "Conclua o login na janela que abriu. Quando terminar, sua mensagem é enviada sozinha…";
+      st.textContent = provider === "antigravity"
+        ? "Entre com a sua conta Google no Antigravity que abriu. Esta janela fecha sozinha quando terminar…"
+        : "Conclua o login no navegador que abriu. Esta janela fecha sozinha quando terminar…";
       let n = 0;
       clearInterval(timer);
       timer = setInterval(async () => {
@@ -1304,7 +1335,7 @@ function pedirLogin(provider, acc) {
         try {
           const r = await api("GET", "/api/accounts");
           S.accounts = r.accounts || [];
-          if (S.accounts.find((x) => x.id === provider)?.status === "connected") { toast(`✅ ${nome} conectado.`); fim(true); return; }
+          if (conectou(r)) { toast(`✅ ${nome} conectado.`); fim(true); return; }
         } catch { /* ainda esperando */ }
         if (n >= 120) {  // 5 minutos
           clearInterval(timer);
@@ -1331,7 +1362,7 @@ async function startSend() {
     if (!(await garantirLogin(agent ? agent.provider : provider))) return;  // sem login: a mensagem fica na caixa
     // Com agente, tudo vem dele (o servidor completa); sem agente, vale o que foi escolhido na tela.
     const body = agent
-      ? { agent_id: agent.id, cwd: agent.cwd || localStorageGet("lastCwd") || S.meta.home, greeting: agentGreeting(agent) }
+      ? { agent_id: agent.id, cwd: agent.cwd || pastaPadrao(), greeting: agentGreeting(agent) }
       : { provider, cwd: $("#ds-cwd").value.trim(), ...readProviderFields("ds", provider) };
     const chat = await api("POST", "/api/chats", body);
     if (!agent) localStorageSet("lastCwd", body.cwd);
@@ -1632,657 +1663,182 @@ async function reiniciarServidor() {
   setTimeout(checar, 1200);
 }
 
-function openAddAiModal() {
-  const modal = $("#modal-add-ai");
-  if (!modal) return;
-  modal.classList.remove("hidden");
-  const ag = (S.accounts || []).find((a) => a.id === "antigravity");
-  const cl = (S.accounts || []).find((a) => a.id === "claude");
-  const cx = (S.accounts || []).find((a) => a.id === "codex");
-  const badgeHtml = (acc) => {
-    if (acc?.status === "connected") return `<span class="badge-status ok">🟢 Conectado</span>`;
-    return `<span class="badge-status dis">⚪ Não configurado</span>`;
-  };
-  if ($("#cat-badge-antigravity")) $("#cat-badge-antigravity").innerHTML = badgeHtml(ag);
-  if ($("#cat-badge-claude")) $("#cat-badge-claude").innerHTML = badgeHtml(cl);
-  if ($("#cat-badge-codex")) $("#cat-badge-codex").innerHTML = badgeHtml(cx);
-}
-
-function closeAddAiModal() {
-  const modal = $("#modal-add-ai");
-  if (modal) modal.classList.add("hidden");
-}
-
+/* Configurações → Contas: uma linha por IA (estado + conta, modelo padrão, Conectar/Desconectar).
+   Conectar abre a janela de login (navegador ou chave de API); o resto fica recolhido em "Detalhes". */
 async function renderContas() {
   const container = $("#sec-contas");
   if (!container) return;
   container.innerHTML = `<div class="muted small" style="padding:10px 0">Carregando contas de IA…</div>`;
-  let accountsData = [];
+  let contas = [];
   try {
-    const res = await api("GET", "/api/accounts");
-    accountsData = res.accounts || [];
-    S.accounts = accountsData;
+    contas = (await api("GET", "/api/accounts")).accounts || [];
+    S.accounts = contas;
   } catch (e) {
     container.innerHTML = `<div class="err-box">Erro ao consultar contas: ${esc(e.message)}</div>`;
     return;
   }
+  const ordem = ["claude", "codex", "antigravity"];
+  contas.sort((a, b) => ordem.indexOf(a.id) - ordem.indexOf(b.id));
 
-  const antigravity = accountsData.find((a) => a.id === "antigravity") || {};
-  const claude = accountsData.find((a) => a.id === "claude") || {};
-  const codex = accountsData.find((a) => a.id === "codex") || {};
-  const hasAnyConnected = accountsData.some((a) => a.status === "connected");
+  const kv = (k, v) => (v ? `<div class="conta-kv"><span class="k">${k}</span><span class="v">${v}</span></div>` : "");
+  const caminho = (p) => (p ? `<code class="small">${esc(p)}</code>` : "");
 
-  const statusBadge = (st) => {
-    if (st === "connected") return `<span class="badge-status ok">🟢 Conectado</span>`;
-    if (st === "error") return `<span class="badge-status err">⚠️ Erro na conexão</span>`;
-    return `<span class="badge-status dis">⚪ Não configurado</span>`;
+  const estado = (a) => {
+    if (a.status === "unavailable" || (a.id !== "claude" && a.available === false)) return { cls: "dis", txt: "Não instalado" };
+    if (a.status === "error") return { cls: "err", txt: "Erro na conexão" };
+    if (a.status !== "connected") return { cls: "dis", txt: "Não conectado" };
+    const quem = a.has_custom_key ? `chave de API ${a.masked_key || ""}` : (a.email || a.user_name || "");
+    return { cls: "ok", txt: `Conectado${quem ? ` · ${quem}` : ""}` };
   };
 
-  const renderAntigravityProfiles = () => {
-    const list = antigravity.profiles || [];
-    if (!list.length) return "";
-    return `
-      <div class="account-profiles-box">
-        <label style="font-weight:600;font-size:13px;display:block;margin-bottom:4px">Perfis e Contas Salvas:</label>
-        ${list.map((p) => `
-          <div class="account-profile-item ${p.active ? 'active' : ''}">
-            <div class="account-profile-name">
-              <span>👤 <b>${esc(p.label || p.email || p.id)}</b></span>
-              ${p.active ? '<span class="badge-active">Ativa</span>' : ''}
-            </div>
-            <div class="row gap align-center">
-              ${!p.active ? `<button type="button" class="btn btn-sm btn-ag-switch" data-id="${esc(p.id)}">Usar esta conta</button>` : ''}
-              ${list.length > 1 ? `<button type="button" class="btn ghost icon btn-ag-del-prof" data-id="${esc(p.id)}" title="Remover perfil salvo">🗑</button>` : ''}
-            </div>
-          </div>
-        `).join('')}
-      </div>
-    `;
+  const perfis = (a) => {
+    // Codex/Antigravity: contas e chaves salvas; Claude: só chaves salvas (o login da conta é um só)
+    const lista = a.profiles || [];
+    if (!lista.length) return "";
+    const ativo = (p) => p.active || (a.has_custom_key && p.masked_key && p.masked_key === a.masked_key);
+    return `<div class="conta-perfis"><div class="k">Contas e chaves salvas</div>${lista.map((p) => `
+      <div class="conta-perfil ${ativo(p) ? "ativo" : ""}">
+        <span>${p.type === "api_key" || p.masked_key ? "🔑" : "👤"} ${esc(p.label || p.email || p.id)}</span>
+        ${ativo(p) ? `<span class="badge-active">Em uso</span>` : `<button type="button" class="btn btn-sm" data-acao="usar-perfil" data-p="${a.id}" data-id="${esc(p.id)}">Usar</button>`}
+        <button type="button" class="btn ghost icon" data-acao="apagar-perfil" data-p="${a.id}" data-id="${esc(p.id)}" title="Remover dos salvos">🗑</button>
+      </div>`).join("")}</div>`;
   };
 
-  const renderCodexProfiles = () => {
-    const list = codex.profiles || [];
-    if (!list.length) return "";
-    return `
-      <div class="account-profiles-box">
-        <label style="font-weight:600;font-size:13px;display:block;margin-bottom:4px">Perfis e Contas Salvas:</label>
-        ${list.map((p) => `
-          <div class="account-profile-item ${p.active ? 'active' : ''}">
-            <div class="account-profile-name">
-              <span>👤 <b>${esc(p.label || p.email || p.id)}</b></span>
-              ${p.active ? '<span class="badge-active">Ativa</span>' : ''}
-            </div>
-            <div class="row gap align-center">
-              ${!p.active ? `<button type="button" class="btn btn-sm btn-codex-switch" data-id="${esc(p.id)}">Usar esta conta</button>` : ''}
-              ${list.length > 1 ? `<button type="button" class="btn ghost icon btn-codex-del-prof" data-id="${esc(p.id)}" title="Remover perfil salvo">🗑</button>` : ''}
-            </div>
-          </div>
-        `).join('')}
-      </div>
-    `;
+  const detalhes = (a) => {
+    let linhas = "";
+    if (a.id === "claude") {
+      linhas = kv("Acesso", a.has_custom_key ? "Chave de API" : (a.status === "connected" ? "Conta Claude (login no navegador)" : "—"))
+        + kv("Organização", a.org ? esc(a.org) : "") + kv("Versão", esc(a.version || "")) + kv("Pasta de configuração", caminho(a.config_path));
+    } else if (a.id === "codex") {
+      linhas = kv("Acesso", a.has_custom_key ? "Chave de API" : (a.auth_mode === "chatgpt" ? "Conta ChatGPT" : esc(a.auth_mode || "—")))
+        + kv("Padrão do próprio Codex", a.default_model ? `<code>${esc(a.default_model)}</code>` : "")
+        + kv("Programa", a.available ? caminho(a.path) : `<span class="err-inline">codex.exe não encontrado</span>`)
+        + kv("Sandbox do Windows", `<span id="st-sbx-status">verificando…</span>
+            <button type="button" class="btn btn-sm" data-acao="sandbox" data-modo="unelevated" title="Necessário para comandos nos modos somente leitura ou pasta do chat">Configurar (sem admin)</button>
+            <button type="button" class="btn btn-sm" data-acao="sandbox" data-modo="elevated">Configurar (elevado)</button>`)
+        + kv("Pasta de configuração", caminho(a.config_path));
+    } else {
+      linhas = kv("Acesso", a.has_custom_key ? "Chave de API (GEMINI_API_KEY)" : (a.status === "connected" ? "Conta Google" : "—"))
+        + kv("Programa", a.available ? caminho(a.path) : `<span class="err-inline">agy.exe não encontrado</span>`)
+        + kv("Pasta de configuração", caminho(a.config_path));
+    }
+    const removerChave = a.has_custom_key
+      ? `<button type="button" class="btn btn-sm ghost" data-acao="remover-chave" data-p="${a.id}">Parar de usar a chave de API</button>` : "";
+    return `<details class="conta-detalhes"><summary>Detalhes</summary>
+      ${a.error ? `<div class="err-box">${esc(a.error)}</div>` : ""}
+      <div class="conta-kvs">${linhas}</div>${perfis(a)}
+      <div class="conta-rodape">${removerChave}<a href="#/consumo" class="btn btn-sm ghost">📊 Ver consumo</a></div>
+    </details>`;
   };
 
-  const renderClaudeProfiles = () => {
-    const list = claude.profiles || [];
-    if (!list.length) return "";
-    return `
-      <div class="account-profiles-box">
-        <label style="font-weight:600;font-size:13px;display:block;margin-bottom:4px">Chaves de API Salvas:</label>
-        ${list.map((p) => `
-          <div class="account-profile-item ${claude.has_custom_key && claude.masked_key === p.masked_key ? 'active' : ''}">
-            <div class="account-profile-name">
-              <span>🔑 <b>${esc(p.label)}</b></span>
-              ${claude.has_custom_key && claude.masked_key === p.masked_key ? '<span class="badge-active">Ativa</span>' : ''}
-            </div>
-            <div class="row gap align-center">
-              ${!(claude.has_custom_key && claude.masked_key === p.masked_key) ? `<button type="button" class="btn btn-sm btn-claude-switch" data-id="${esc(p.id)}">Ativar chave</button>` : ''}
-              <button type="button" class="btn ghost icon btn-claude-del-prof" data-id="${esc(p.id)}" title="Remover chave salva">🗑</button>
-            </div>
-          </div>
-        `).join('')}
+  const linha = (a) => {
+    const e = estado(a);
+    const conectado = a.status === "connected";
+    const botoes = conectado
+      ? `<button type="button" class="btn btn-sm" data-acao="trocar" data-p="${a.id}">Trocar conta</button>
+         <button type="button" class="btn btn-sm ghost" data-acao="desconectar" data-p="${a.id}">Desconectar</button>`
+      : `<button type="button" class="btn btn-sm primary" data-acao="conectar" data-p="${a.id}">Conectar</button>`;
+    return `<div class="conta-linha" data-p="${a.id}">
+      <div class="conta-topo">
+        <span class="dot ${a.id}"></span>
+        <b class="conta-nome">${esc(NOME_IA[a.id] || a.name)}</b>
+        <span class="conta-estado ${e.cls}" title="${esc(e.txt)}">${esc(e.txt)}</span>
+        <span class="grow"></span>
+        <div class="conta-botoes">${botoes}</div>
       </div>
-    `;
+      ${caixaPadroes(a.id)}
+      ${detalhes(a)}
+    </div>`;
   };
 
-  container.innerHTML = `
-    <div class="card" style="margin-bottom:16px">
-      <div class="row align-center gap" style="justify-content:space-between;flex-wrap:wrap">
-        <div>
-          <h3>Gestão de Contas de IA</h3>
-          <div class="hint" style="margin-top:2px;font-size:13px">
-            Aqui você pode gerenciar, conectar, trocar e alternar entre suas contas de IA <b>diretamente pelo Agent Hub</b>, sem precisar abrir o VS Code.
-          </div>
-        </div>
-        <button type="button" class="btn primary" id="btn-open-add-ai">➕ Adicionar IA</button>
+  container.innerHTML = `<div class="card contas-card">
+      <div class="contas-cab">
+        <div><h3>Contas de IA</h3>
+          <div class="hint">Conecte cada IA pela sua conta ou por uma chave de API. Os acessos ficam só neste computador.</div></div>
+        <button type="button" class="btn btn-sm ghost" data-acao="atualizar" title="Consulta de novo o estado das IAs">↻ Atualizar</button>
       </div>
-    </div>
-
-    ${!hasAnyConnected ? `
-      <div class="onboarding-card">
-        <div class="onboarding-icon">🚀</div>
-        <div class="onboarding-content">
-          <h3>Bem-vindo ao Agent Hub!</h3>
-          <p>Nenhuma IA está conectada ainda. Conecte sua primeira IA (Google Antigravity, Claude ou Codex) para começar a conversar e criar agentes personalizados.</p>
-          <button type="button" class="btn primary lg" id="btn-onboarding-add-ai">➕ Conectar Minha Primeira IA</button>
-        </div>
+      <div class="conta-pasta">
+        <label for="pad-cwd">Pasta de trabalho padrão dos chats novos <span class="muted">(todas as IAs)</span></label>
+        ${folderFieldHtml("pad-cwd", S.meta?.padroesChat?.cwd || "", "Vazio: usa a última pasta escolhida")}
       </div>
-    ` : ''}
+      ${contas.map(linha).join("")}
+      <div class="hint conta-nota">Os padrões valem para os próximos chats; em cada chat dá para mudar em "Modelo, permissões e pasta". Chats já abertos e agentes mantêm a configuração deles.</div>
+    </div>`;
 
-    <!-- Card Antigravity -->
-    <div class="card account-card">
-      <div class="account-card-header">
-        <div class="account-card-title">
-          <span class="badge antigravity">Google Antigravity</span>
-          <div>
-            <b>${esc(antigravity.titulo || "Google Antigravity / Gemini CLI")}</b>
-            <div class="small muted">Google</div>
-          </div>
-        </div>
-        <div>${statusBadge(antigravity.status)}</div>
-      </div>
-
-      <div class="account-details-grid">
-        ${antigravity.email ? `
-        <div class="account-kv-item highlight">
-          <span class="k">Conta Google Ativa:</span>
-          <span class="v"><b>${esc(antigravity.email)}</b></span>
-        </div>` : ""}
-        <div class="account-kv-item">
-          <span class="k">Autenticação:</span>
-          <span class="v">${antigravity.has_custom_key ? "🔑 Chave de API GEMINI_API_KEY" : (antigravity.status === 'connected' ? "🌐 Conta Google / Gemini CLI" : "Não configurado")}</span>
-        </div>
-        <div class="account-kv-item">
-          <span class="k">Executável CLI:</span>
-          <span class="v">${antigravity.available ? `<code class="small">${esc(antigravity.path || "agy.exe")}</code>` : `<span class="err-inline">agy.exe não encontrado</span>`}</span>
-        </div>
-        <div class="account-kv-item">
-          <span class="k">Modelos e Recursos:</span>
-          <span class="v">${antigravity.models_count ? `${antigravity.models_count} modelos (Gemini 3.8 Flash, Claude Sonnet 4.6 Thinking, GPT-OSS)` : "Gemini 3.8 Flash, Claude Sonnet"} · ferramentas e raciocínio profundo</span>
-        </div>
-        <div class="account-kv-item">
-          <span class="k">Pasta de configuração:</span>
-          <span class="v"><code class="small">${esc(antigravity.config_path || "~/.gemini")}</code></span>
-        </div>
-      </div>
-
-      ${renderAntigravityProfiles()}
-
-      <!-- Chave API Gemini Customizada -->
-      <div class="account-key-box">
-        <div class="row align-center gap">
-          <label style="margin:0;font-size:13px;font-weight:600">Usar Chave de API Google / Gemini (GEMINI_API_KEY):</label>
-          <span class="small muted" style="margin-left:auto">${antigravity.has_custom_key ? `Ativa: <code>${esc(antigravity.masked_key)}</code>` : "Opcional"}</span>
-        </div>
-        <div class="row gap" style="margin-top:6px">
-          <input type="password" id="ag-api-key" class="input flex-1" placeholder="${antigravity.has_custom_key ? 'Substituir chave...' : 'AIzaSy... (salvar chave GEMINI_API_KEY)'}" autocomplete="off">
-          <input type="text" id="ag-key-label" class="input" style="width:140px" placeholder="Rótulo (opcional)" autocomplete="off">
-          <button type="button" class="btn" id="ag-save-key">Salvar chave</button>
-          ${antigravity.has_custom_key ? `<button type="button" class="btn ghost" id="ag-remove-key" title="Desativar chave">Remover</button>` : ""}
-        </div>
-      </div>
-
-      ${caixaModeloPadrao("antigravity")}
-
-      <div class="account-actions-row">
-        <div class="account-actions-left">
-          <button type="button" class="btn primary" id="ag-btn-login" title="Conectar ou trocar de conta Google">${antigravity.status === 'connected' ? '🔑 Trocar conta' : '🔑 Conectar conta Google'}</button>
-          ${antigravity.status === 'connected' ? `<button type="button" class="btn ghost" id="ag-btn-logout">🚪 Desconectar</button>` : ''}
-          <button type="button" class="btn" id="ag-btn-refresh">↻ Recarregar</button>
-        </div>
-        <div class="account-actions-right">
-          <a href="#/consumo" class="btn ghost btn-consumo-link">📊 Ver consumo do Antigravity</a>
-        </div>
-      </div>
-    </div>
-
-    <!-- Card Claude -->
-    <div class="card account-card">
-      <div class="account-card-header">
-        <div class="account-card-title">
-          <span class="badge claude">Claude</span>
-          <div>
-            <b>${esc(claude.titulo || "Claude Code & Agent SDK")}</b>
-            <div class="small muted">Anthropic</div>
-          </div>
-        </div>
-        <div>${statusBadge(claude.status)}</div>
-      </div>
-
-      <div class="account-details-grid">
-        <div class="account-kv-item">
-          <span class="k">Autenticação ativa:</span>
-          <span class="v">${claude.has_custom_key ? "🔑 Chave de API personalizada" : (claude.status === 'connected' ? "💻 Login do terminal (OAuth Anthropic)" : "Desconectado")}</span>
-        </div>
-        <div class="account-kv-item">
-          <span class="k">Versão do Claude:</span>
-          <span class="v"><b>${esc(claude.version || "consultando…")}</b></span>
-        </div>
-        ${claude.user_id ? `
-        <div class="account-kv-item">
-          <span class="k">Identificador da instalação:</span>
-          <span class="v"><code class="small">${esc(claude.user_id.slice(0, 20))}…</code></span>
-        </div>` : ""}
-        <div class="account-kv-item">
-          <span class="k">Modelos e Recursos:</span>
-          <span class="v">${claude.models_count ? `${claude.models_count} modelos disponíveis` : "Sonnet, Opus, Haiku"} · subagentes e MCPs</span>
-        </div>
-        <div class="account-kv-item">
-          <span class="k">Pasta de configuração:</span>
-          <span class="v"><code class="small">${esc(claude.config_path || "~/.claude")}</code></span>
-        </div>
-      </div>
-
-      ${claude.error ? `<div class="err-box" style="margin-top:10px">${esc(claude.error)}</div>` : ""}
-
-      ${renderClaudeProfiles()}
-
-      <!-- Chave API Customizada -->
-      <div class="account-key-box">
-        <div class="row align-center gap">
-          <label style="margin:0;font-size:13px;font-weight:600">Usar Chave de API Anthropic:</label>
-          <span class="small muted" style="margin-left:auto">${claude.has_custom_key ? `Ativa: <code>${esc(claude.masked_key)}</code>` : "Opcional"}</span>
-        </div>
-        <div class="row gap" style="margin-top:6px">
-          <input type="password" id="claude-api-key" class="input flex-1" placeholder="${claude.has_custom_key ? 'Substituir chave...' : 'sk-ant-api03-... (salvar chave de API)'}" autocomplete="off">
-          <input type="text" id="claude-key-label" class="input" style="width:140px" placeholder="Rótulo (opcional)" autocomplete="off">
-          <button type="button" class="btn" id="claude-save-key">Salvar chave</button>
-          ${claude.has_custom_key ? `<button type="button" class="btn ghost" id="claude-remove-key" title="Desativar chave e voltar ao login de terminal">Remover</button>` : ""}
-        </div>
-      </div>
-
-      ${caixaModeloPadrao("claude")}
-
-      <div class="account-actions-row">
-        <div class="account-actions-left">
-          <button type="button" class="btn primary" id="claude-btn-login" title="Login no navegador para conectar ou trocar de conta">${claude.status === 'connected' ? '🔑 Trocar conta' : '🔑 Conectar conta (Login no Navegador)'}</button>
-          ${claude.status === 'connected' ? `<button type="button" class="btn ghost" id="claude-btn-logout">🚪 Desconectar</button>` : ''}
-          <button type="button" class="btn" id="claude-btn-refresh">↻ Recarregar</button>
-        </div>
-        <div class="account-actions-right">
-          <a href="#/consumo" class="btn ghost btn-consumo-link">📊 Ver consumo do Claude</a>
-        </div>
-      </div>
-    </div>
-
-    <!-- Card Codex -->
-    <div class="card account-card">
-      <div class="account-card-header">
-        <div class="account-card-title">
-          <span class="badge codex">Codex</span>
-          <div>
-            <b>${esc(codex.titulo || "Codex app-server")}</b>
-            <div class="small muted">OpenAI / ChatGPT</div>
-          </div>
-        </div>
-        <div>${statusBadge(codex.status)}</div>
-      </div>
-
-      <div class="account-details-grid">
-        ${codex.email ? `
-        <div class="account-kv-item highlight">
-          <span class="k">Conta Ativa:</span>
-          <span class="v"><b>${esc(codex.user_name || "")}</b> <span class="muted">(${esc(codex.email)})</span></span>
-        </div>` : ""}
-        <div class="account-kv-item">
-          <span class="k">Modo de Autenticação:</span>
-          <span class="v">${codex.has_custom_key ? "🔑 Chave de API OpenAI" : (codex.auth_mode === "chatgpt" ? "🌐 ChatGPT (Assinatura / OAuth)" : esc(codex.auth_mode || "Não detectado"))}</span>
-        </div>
-        <div class="account-kv-item">
-          <span class="k">Executável:</span>
-          <span class="v">${codex.available ? `<code class="small">${esc(codex.path || "codex.exe")}</code>` : `<span class="err-inline">codex.exe não encontrado</span>`}</span>
-        </div>
-        ${codex.default_model ? `
-        <div class="account-kv-item">
-          <span class="k" title="Definido no config.toml do Codex; o hub usa o escolhido em &quot;Modelo padrão dos chats novos&quot;, abaixo">Padrão do Codex:</span>
-          <span class="v"><code>${esc(codex.default_model)}</code></span>
-        </div>` : ""}
-        <div class="account-kv-item">
-          <span class="k">Sandbox do Windows:</span>
-          <span class="v" id="st-sbx-status">verificando…</span>
-        </div>
-        <div class="account-kv-item">
-          <span class="k">Pasta de configuração:</span>
-          <span class="v"><code class="small">${esc(codex.config_path || "~/.codex")}</code></span>
-        </div>
-      </div>
-
-      ${renderCodexProfiles()}
-
-      <!-- Chave API Customizada -->
-      <div class="account-key-box">
-        <div class="row align-center gap">
-          <label style="margin:0;font-size:13px;font-weight:600">Usar Chave de API OpenAI:</label>
-          <span class="small muted" style="margin-left:auto">${codex.has_custom_key ? `Ativa: <code>${esc(codex.masked_key)}</code>` : "Opcional"}</span>
-        </div>
-        <div class="row gap" style="margin-top:6px">
-          <input type="password" id="codex-api-key" class="input flex-1" placeholder="${codex.has_custom_key ? 'Substituir chave...' : 'sk-proj-... (salvar chave de API)'}" autocomplete="off">
-          <input type="text" id="codex-key-label" class="input" style="width:140px" placeholder="Rótulo (opcional)" autocomplete="off">
-          <button type="button" class="btn" id="codex-save-key">Salvar chave</button>
-          ${codex.has_custom_key ? `<button type="button" class="btn ghost" id="codex-remove-key" title="Desativar chave e voltar ao login ChatGPT">Remover</button>` : ""}
-        </div>
-      </div>
-
-      <div class="card-inner-section">
-        <div class="small muted"><b>Sandbox do Windows (Codex):</b> Necessário para rodar comandos nos modos somente leitura ou pasta do chat.</div>
-        <div class="row gap" style="margin-top:6px">
-          <button type="button" class="btn" id="st-sbx-unelev">Configurar sandbox (sem admin)</button>
-          <button type="button" class="btn" id="st-sbx-elev">Configurar sandbox (elevado)</button>
-        </div>
-      </div>
-
-      ${caixaModeloPadrao("codex")}
-
-      <div class="account-actions-row">
-        <div class="account-actions-left">
-          <button type="button" class="btn primary" id="codex-btn-login" title="Login no navegador para conectar ou trocar de conta">${codex.status === 'connected' ? '🔑 Trocar conta' : '🔑 Conectar conta (Login no Navegador)'}</button>
-          ${codex.status === 'connected' ? `<button type="button" class="btn ghost" id="codex-btn-logout">🚪 Desconectar</button>` : ''}
-          <button type="button" class="btn" id="codex-btn-refresh">↻ Recarregar</button>
-        </div>
-        <div class="account-actions-right">
-          <a href="#/consumo" class="btn ghost btn-consumo-link">📊 Ver consumo do Codex</a>
-        </div>
-      </div>
-    </div>
-  `;
-
-  // Modelo padrão dos chats novos de cada IA
-  $$(".sel-modelo-padrao").forEach((s) => (s.onchange = async () => {
+  // Padrões dos chats novos: salva a cada mudança
+  const salvarPadroes = async (corpo, aviso) => {
     try {
-      const r = await api("POST", "/api/accounts/default-model", { provider: s.dataset.p, model: s.value });
-      if (S.meta) S.meta.modelosPadrao = r.modelosPadrao;
-      toast(`Chats novos do ${NOME_IA[s.dataset.p]} vão abrir em: ${s.selectedOptions[0].textContent}`);
+      const r = await api("POST", "/api/padroes", corpo);
+      if (S.meta) S.meta.padroesChat = r;
+      toast(aviso);
     } catch (e) { toast(e.message); }
-  }));
+  };
+  $$(".conta-padroes", container).forEach((caixa) => {
+    const p = caixa.dataset.p;
+    $$("select", caixa).forEach((s) => (s.onchange = () =>
+      salvarPadroes({ provider: p, valores: readProviderFields(`pad-${p}`, p) }, `Padrões dos chats novos do ${NOME_IA[p]} salvos.`)));
+  });
+  const campoPasta = $("#pad-cwd");
+  campoPasta.onchange = () => salvarPadroes({ cwd: campoPasta.value.trim() },
+    campoPasta.value.trim() ? "Pasta padrão dos chats novos salva." : "Sem pasta padrão: os chats novos usam a última pasta escolhida.");
+  bindFolderButtons(container, "Pasta padrão dos chats novos");
 
-  // Função auxiliar de monitoramento após iniciar login
-  const monitorarLogin = (provider, nomeProvedor) => {
-    toast(`Iniciamos o login do ${nomeProvedor}. Conclua a autorização no navegador aberto...`, 15000);
-    let tentativas = 0;
-    const interval = setInterval(async () => {
-      tentativas++;
-      try {
-        const check = await api("GET", "/api/accounts");
-        const acc = check.accounts.find((a) => a.id === provider);
-        if (acc && acc.status === "connected") {
-          clearInterval(interval);
-          toast(`✅ ${nomeProvedor} conectado com sucesso!`, 6000);
+  // Um único tratador para todos os botões da tela
+  container.onclick = async (ev) => {
+    const b = ev.target.closest("[data-acao]");
+    if (!b) return;
+    const p = b.dataset.p;
+    const conta = S.accounts.find((x) => x.id === p) || {};
+    const nome = NOME_IA[p] || p;
+    try {
+      switch (b.dataset.acao) {
+        case "conectar":
+          if (await pedirLogin(p, conta)) renderContas();
+          break;
+        case "trocar":
+          if (await pedirLogin(p, conta, { trocar: true })) renderContas();
+          break;
+        case "desconectar":
+          if (!confirm(`Desconectar o ${nome} deste computador?`)) return;
+          await api("POST", "/api/accounts/logout", { provider: p });
+          toast(`${nome} desconectado.`);
           renderContas();
-        }
-      } catch { /* aguardando */ }
-      if (tentativas > 45) clearInterval(interval);
-    }, 2500);
-  };
-
-  // Botões de Adicionar IA (+ Adicionar IA)
-  if ($("#btn-open-add-ai")) $("#btn-open-add-ai").onclick = () => openAddAiModal();
-  if ($("#btn-onboarding-add-ai")) $("#btn-onboarding-add-ai").onclick = () => openAddAiModal();
-  if ($("#modal-add-ai-close")) $("#modal-add-ai-close").onclick = () => closeAddAiModal();
-  const modalBackdrop = $("#modal-add-ai");
-  if (modalBackdrop) {
-    modalBackdrop.onclick = (e) => { if (e.target === modalBackdrop) closeAddAiModal(); };
-  }
-
-  // Ações dentro do modal do Catálogo de IAs
-  $$(".btn-cat-connect").forEach((btn) => {
-    btn.onclick = async () => {
-      const p = btn.dataset.p;
-      closeAddAiModal();
-      if (p === "antigravity") {
-        try {
-          await api("POST", "/api/accounts/login", { provider: "antigravity" });
-          toast("Google Antigravity aberto.");
-        } catch (e) { toast(e.message); }
-      } else if (p === "claude") {
-        try {
-          await api("POST", "/api/accounts/login", { provider: "claude" });
-          monitorarLogin("claude", "Claude");
-        } catch (e) { toast(e.message); }
-      } else if (p === "codex") {
-        try {
-          await api("POST", "/api/accounts/login", { provider: "codex" });
-          monitorarLogin("codex", "Codex");
-        } catch (e) { toast(e.message); }
+          break;
+        case "remover-chave":
+          await api("POST", "/api/accounts/key", { provider: p, key: null });
+          toast(`O ${nome} parou de usar a chave de API.`);
+          renderContas();
+          break;
+        case "usar-perfil":
+          b.disabled = true;
+          await api("POST", "/api/accounts/switch-profile", { provider: p, profile_id: b.dataset.id });
+          toast("Conta alterada.");
+          renderContas();
+          break;
+        case "apagar-perfil":
+          if (!confirm("Remover este item dos salvos?")) return;
+          await api("DELETE", `/api/accounts/profiles/${p}/${encodeURIComponent(b.dataset.id)}`);
+          toast("Removido.");
+          renderContas();
+          break;
+        case "sandbox":
+          await api("POST", "/api/codex/sandbox/setup", { mode: b.dataset.modo });
+          toast("Configuração do sandbox iniciada…");
+          break;
+        case "atualizar":
+          toast("Atualizando…");
+          await api("POST", "/api/meta/refresh").catch(() => {});
+          setTimeout(async () => { await loadMeta(); renderContas(); }, 3000);
+          break;
       }
-    };
-  });
-
-  $$(".btn-cat-key").forEach((btn) => {
-    btn.onclick = async () => {
-      const p = btn.dataset.p;
-      const promptTitle = p === "antigravity"
-        ? "Digite a chave do Google Gemini (GEMINI_API_KEY):"
-        : (p === "claude" ? "Digite a chave da Anthropic (sk-ant-...):" : "Digite a chave da OpenAI (sk-proj-...):");
-      const key = prompt(promptTitle);
-      if (key && key.trim()) {
-        try {
-          await api("POST", "/api/accounts/key", { provider: p, key: key.trim() });
-          closeAddAiModal();
-          toast("Chave de API salva com sucesso!");
-          await renderContas();
-        } catch (e) { toast(e.message); }
-      }
-    };
-  });
-
-  // Antigravity Binds
-  if ($("#ag-btn-login")) {
-    $("#ag-btn-login").onclick = async () => {
-      try {
-        await api("POST", "/api/accounts/login", { provider: "antigravity" });
-        toast("Google Antigravity iniciado.");
-      } catch (e) { toast(e.message); }
-    };
-  }
-  if ($("#ag-btn-logout")) {
-    $("#ag-btn-logout").onclick = async () => {
-      if (!confirm("Deseja desconectar do Antigravity?")) return;
-      try {
-        await api("POST", "/api/accounts/logout", { provider: "antigravity" });
-        toast("Desconectado do Antigravity.");
-        renderContas();
-      } catch (e) { toast(e.message); }
-    };
-  }
-  if ($("#ag-btn-refresh")) {
-    $("#ag-btn-refresh").onclick = async () => {
-      toast("Atualizando dados do Antigravity…");
-      await renderContas();
-    };
-  }
-  if ($("#ag-save-key")) {
-    $("#ag-save-key").onclick = async () => {
-      const val = $("#ag-api-key").value.trim();
-      const lbl = $("#ag-key-label").value.trim() || null;
-      if (!val) { toast("Digite uma chave válida ou deixe em branco."); return; }
-      try {
-        await api("POST", "/api/accounts/key", { provider: "antigravity", key: val, label: lbl });
-        toast("Chave GEMINI_API_KEY salva e ativada!");
-        renderContas();
-      } catch (e) { toast(e.message); }
-    };
-  }
-  if ($("#ag-remove-key")) {
-    $("#ag-remove-key").onclick = async () => {
-      try {
-        await api("POST", "/api/accounts/key", { provider: "antigravity", key: null });
-        toast("Chave GEMINI_API_KEY removida.");
-        renderContas();
-      } catch (e) { toast(e.message); }
-    };
-  }
-  $$(".btn-ag-switch").forEach((btn) => {
-    btn.onclick = async () => {
-      const id = btn.dataset.id;
-      btn.disabled = true;
-      try {
-        await api("POST", "/api/accounts/switch-profile", { provider: "antigravity", profile_id: id });
-        toast("Conta alterada com sucesso!");
-        renderContas();
-      } catch (e) { toast(e.message); btn.disabled = false; }
-    };
-  });
-  $$(".btn-ag-del-prof").forEach((btn) => {
-    btn.onclick = async () => {
-      const id = btn.dataset.id;
-      if (!confirm("Remover este perfil salvo?")) return;
-      try {
-        await api("DELETE", `/api/accounts/profiles/antigravity/${encodeURIComponent(id)}`);
-        toast("Perfil removido.");
-        renderContas();
-      } catch (e) { toast(e.message); }
-    };
-  });
-
-  // Login / Logout Claude
-  $("#claude-btn-login").onclick = async () => {
-    try {
-      await api("POST", "/api/accounts/login", { provider: "claude" });
-      monitorarLogin("claude", "Claude");
-    } catch (e) { toast(e.message); }
+    } catch (e) { toast(e.message); b.disabled = false; }
   };
-  if ($("#claude-btn-logout")) {
-    $("#claude-btn-logout").onclick = async () => {
-      if (!confirm("Deseja desconectar a conta atual do Claude?")) return;
-      try {
-        await api("POST", "/api/accounts/logout", { provider: "claude" });
-        toast("Conta do Claude desconectada.");
-        renderContas();
-      } catch (e) { toast(e.message); }
-    };
-  }
 
-  // Login / Logout Codex
-  $("#codex-btn-login").onclick = async () => {
-    try {
-      await api("POST", "/api/accounts/login", { provider: "codex" });
-      monitorarLogin("codex", "Codex");
-    } catch (e) { toast(e.message); }
-  };
-  if ($("#codex-btn-logout")) {
-    $("#codex-btn-logout").onclick = async () => {
-      if (!confirm("Deseja desconectar a conta atual do Codex?")) return;
-      try {
-        await api("POST", "/api/accounts/logout", { provider: "codex" });
-        toast("Conta do Codex desconectada.");
-        renderContas();
-      } catch (e) { toast(e.message); }
-    };
-  }
-
-  // Alternância e exclusão de perfis Codex
-  $$(".btn-codex-switch").forEach((btn) => {
-    btn.onclick = async () => {
-      const id = btn.dataset.id;
-      btn.disabled = true;
-      try {
-        await api("POST", "/api/accounts/switch-profile", { provider: "codex", profile_id: id });
-        toast("Conta alterada com sucesso!");
-        renderContas();
-      } catch (e) { toast(e.message); btn.disabled = false; }
-    };
-  });
-  $$(".btn-codex-del-prof").forEach((btn) => {
-    btn.onclick = async () => {
-      const id = btn.dataset.id;
-      if (!confirm("Remover este perfil salvo?")) return;
-      try {
-        await api("DELETE", `/api/accounts/profiles/codex/${encodeURIComponent(id)}`);
-        toast("Perfil removido.");
-        renderContas();
-      } catch (e) { toast(e.message); }
-    };
-  });
-
-  // Alternância e exclusão de perfis Claude
-  $$(".btn-claude-switch").forEach((btn) => {
-    btn.onclick = async () => {
-      const id = btn.dataset.id;
-      btn.disabled = true;
-      try {
-        await api("POST", "/api/accounts/switch-profile", { provider: "claude", profile_id: id });
-        toast("Chave ativada!");
-        renderContas();
-      } catch (e) { toast(e.message); btn.disabled = false; }
-    };
-  });
-  $$(".btn-claude-del-prof").forEach((btn) => {
-    btn.onclick = async () => {
-      const id = btn.dataset.id;
-      if (!confirm("Remover esta chave salva?")) return;
-      try {
-        await api("DELETE", `/api/accounts/profiles/claude/${encodeURIComponent(id)}`);
-        toast("Chave removida.");
-        renderContas();
-      } catch (e) { toast(e.message); }
-    };
-  });
-
-  // Binds de chaves Claude
-  $("#claude-save-key").onclick = async () => {
-    const val = $("#claude-api-key").value.trim();
-    const lbl = $("#claude-key-label").value.trim() || null;
-    if (!val) { toast("Digite uma chave válida ou deixe em branco."); return; }
-    try {
-      await api("POST", "/api/accounts/key", { provider: "claude", key: val, label: lbl });
-      toast("Chave do Claude salva e ativada!");
-      renderContas();
-    } catch (e) { toast(e.message); }
-  };
-  if ($("#claude-remove-key")) {
-    $("#claude-remove-key").onclick = async () => {
-      try {
-        await api("POST", "/api/accounts/key", { provider: "claude", key: null });
-        toast("Chave removida. O Claude voltará ao login local.");
-        renderContas();
-      } catch (e) { toast(e.message); }
-    };
-  }
-  $("#claude-btn-refresh").onclick = async () => {
-    await api("POST", "/api/meta/refresh");
-    toast("Consultando o Claude Code… (alguns segundos)");
-    setTimeout(async () => { await loadMeta(); renderContas(); }, 6000);
-  };
-  if ($("#codex-btn-refresh")) {
-    $("#codex-btn-refresh").onclick = async () => {
-      toast("Atualizando dados do Codex…");
-      await loadAccounts();
-      renderContas();
-    };
-  }
-
-  // Binds de chaves Codex
-  $("#codex-save-key").onclick = async () => {
-    const val = $("#codex-api-key").value.trim();
-    const lbl = $("#codex-key-label").value.trim() || null;
-    if (!val) { toast("Digite uma chave válida ou deixe em branco."); return; }
-    try {
-      await api("POST", "/api/accounts/key", { provider: "codex", key: val, label: lbl });
-      toast("Chave do Codex salva e ativada!");
-      renderContas();
-    } catch (e) { toast(e.message); }
-  };
-  if ($("#codex-remove-key")) {
-    $("#codex-remove-key").onclick = async () => {
-      try {
-        await api("POST", "/api/accounts/key", { provider: "codex", key: null });
-        toast("Chave removida. O Codex voltará ao login do ChatGPT.");
-        renderContas();
-      } catch (e) { toast(e.message); }
-    };
-  }
-
-  const setupSandbox = async (mode) => {
-    try { await api("POST", "/api/codex/sandbox/setup", { mode }); toast("Configuração do sandbox iniciada…"); }
-    catch (e) { toast(e.message); }
-  };
-  $("#st-sbx-unelev").onclick = () => setupSandbox("unelevated");
-  $("#st-sbx-elev").onclick = () => setupSandbox("elevated");
-
-  if (codex.available) {
+  const codex = contas.find((a) => a.id === "codex");
+  if (codex?.available) {
     const r = await api("GET", "/api/codex/sandbox").catch((e) => ({ status: "error", error: e.message }));
-    const label = { ready: "✅ pronto", notConfigured: "⚠️ não configurado", error: "erro: " + (r.error || "") }[r.status] || r.status;
     const el = $("#st-sbx-status");
-    if (el) el.textContent = label;
+    if (el) el.textContent = { ready: "✅ pronto", notConfigured: "⚠️ não configurado", error: "erro: " + (r.error || "") }[r.status] || r.status;
   }
 }
 
